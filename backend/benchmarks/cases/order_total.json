@@ -1,0 +1,12 @@
+{
+  "id": "order_total",
+  "title": "修复订单金额计算链路",
+  "description": "订单服务没有复用定价模块，并在折扣和金额取整时产生错误。",
+  "difficulty": "medium",
+  "category": "cross_module",
+  "tags": ["multi_file", "decimal", "business_rule"],
+  "repo_fixture": "order_total_repo",
+  "task": "修复订单总价计算：逐项使用 pricing.discounted_subtotal，汇总后按两位小数返回 Decimal；折扣必须位于 0 到 1 之间。不要修改测试文件。",
+  "verification_target": "tests/test_order_service.py",
+  "timeout_seconds": 120
+}

@@ -21,7 +21,12 @@ from backend.src.evals.analysis import (
     summarize_by_difficulty,
     wilcoxon_paired_test,
 )
-from backend.src.evals.dataset import load_benchmark_cases, load_case
+from backend.src.evals.audit import build_audit_report
+from backend.src.evals.dataset import (
+    calculate_dataset_fingerprint,
+    load_benchmark_cases,
+    load_case,
+)
 from backend.src.evals.metrics import summarize_results
 from backend.src.evals.models import BenchmarkCase, EvaluationResult, EvaluationVariant
 from backend.src.evals.runner import (
@@ -30,8 +35,8 @@ from backend.src.evals.runner import (
     collect_usage,
     create_workspace,
 )
-from backend.src.models.agent_state import AgentEvent
 from backend.src.main import app
+from backend.src.models.agent_state import AgentEvent
 
 
 def test_load_add_bug_case() -> None:
@@ -46,11 +51,23 @@ def test_load_add_bug_case() -> None:
 
 
 def test_dataset_covers_all_difficulty_levels() -> None:
-    """正式实验数据集至少应覆盖 easy、medium 和 hard 三档。"""
+    """正式实验数据集应在三档难度上保持均衡。"""
 
     cases = load_benchmark_cases()
     assert {case.difficulty for case in cases} == {"easy", "medium", "hard"}
+    assert len(cases) == 9
+    assert all(sum(item.difficulty == level for item in cases) == 3 for level in ("easy", "medium", "hard"))
     assert all(case.tags for case in cases)
+    assert len(calculate_dataset_fingerprint()) == 64
+
+
+def test_all_benchmark_baselines_fail_before_agent_changes() -> None:
+    """每个错误版 fixture 的 verifier 都必须先失败，防止无效样本混入实验。"""
+
+    report = build_audit_report(execute=True)
+    assert report["valid"] is True
+    assert report["case_count"] == 9
+    assert all(row["baseline_failed"] is True for row in report["cases"])
 
 
 def test_variants_use_independent_git_workspaces(
@@ -232,30 +249,36 @@ def test_full_experiment_uses_one_run_id_and_saves_config(
 
     from backend.src.evals import runner
 
-    calls: list[tuple[str, EvaluationVariant, str, bool]] = []
+    calls: list[tuple[str, EvaluationVariant, str, int, bool]] = []
 
     def fake_evaluate_case(
         case: BenchmarkCase,
         variant: EvaluationVariant,
         run_id: str | None = None,
+        repeat_index: int = 1,
         persist: bool = True,
     ) -> EvaluationResult:
         assert run_id is not None
-        calls.append((case.id, variant, run_id, persist))
-        return _evaluation_result(case.id, variant)
+        calls.append((case.id, variant, run_id, repeat_index, persist))
+        result = _evaluation_result(case.id, variant)
+        result.repeat_index = repeat_index
+        return result
 
     monkeypatch.setattr(runner, "EXPERIMENT_ROOT", tmp_path / "experiments")
     monkeypatch.setattr(runner, "evaluate_case", fake_evaluate_case)
 
     run_id = runner.run_full_experiment(repeats=2)
-    assert len(calls) == 3 * 4 * 2
+    assert len(calls) == 9 * 4 * 2
     assert {call[2] for call in calls} == {run_id}
-    assert all(call[3] is True for call in calls)
+    assert {call[3] for call in calls} == {1, 2}
+    assert all(call[4] is True for call in calls)
 
     config_path = tmp_path / "experiments" / run_id / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert config["repeats"] == 2
-    assert config["benchmark_cases"] == 3
+    assert config["benchmark_cases"] == 9
+    assert len(config["dataset_sha256"]) == 64
+    assert config["random_seed"] == 42
     assert config["variants"] == list(VARIANTS)
 
 
@@ -302,7 +325,9 @@ def test_repository_export_figures_and_summary_api(
 
     csv_path = exporter.export_results_csv(run_id="dashboard-run")
     assert csv_path.read_bytes().startswith(b"\xef\xbb\xbf")
-    assert "tests_passed" in csv_path.read_text(encoding="utf-8-sig")
+    exported = csv_path.read_text(encoding="utf-8-sig")
+    assert "tests_passed" in exported
+    assert "repeat_index" in exported
 
     figure_paths = plotter.generate_all_figures(run_id="dashboard-run")
     assert len(figure_paths) == 4

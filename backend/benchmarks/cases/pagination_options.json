@@ -1,0 +1,12 @@
+{
+  "id": "pagination_options",
+  "title": "实现分页参数默认值与上限",
+  "description": "分页参数需要在 schema 和 service 之间统一默认值及最大值校验。",
+  "difficulty": "medium",
+  "category": "feature",
+  "tags": ["multi_file", "validation", "backward_compatibility"],
+  "repo_fixture": "pagination_options_repo",
+  "task": "实现 PageOptions 和 list_users 的分页规则：默认 page=1、page_size=DEFAULT_PAGE_SIZE，只允许 page>=1 且 1<=page_size<=MAX_PAGE_SIZE，并保持 list_users() 无参数调用兼容。不要修改测试文件。",
+  "verification_target": "tests/test_service.py",
+  "timeout_seconds": 120
+}

@@ -1,0 +1,12 @@
+{
+  "id": "email_normalization",
+  "title": "规范化用户邮箱",
+  "description": "邮箱规范化遗漏了首尾空白处理，并且没有拒绝明显无效的地址。",
+  "difficulty": "easy",
+  "category": "validation",
+  "tags": ["single_file", "string", "edge_case"],
+  "repo_fixture": "email_normalization_repo",
+  "task": "修复 user_utils.py 的 normalize_email：去除首尾空白、转为小写，并对不包含 @ 的输入抛出 ValueError。不要修改测试文件。",
+  "verification_target": "tests/test_user_utils.py",
+  "timeout_seconds": 120
+}

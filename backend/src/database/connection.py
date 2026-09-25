@@ -6,10 +6,8 @@
 """
 
 import sqlite3
-from pathlib import Path
 
 from ..config import settings
-
 
 # 保留模块级变量，测试可以 monkeypatch 到临时数据库；默认值来自统一配置。
 DATABASE_PATH = settings.database_path
@@ -153,6 +151,7 @@ def init_database() -> None:
                 run_id TEXT NOT NULL,
                 case_id TEXT NOT NULL,
                 variant TEXT NOT NULL,
+                repeat_index INTEGER NOT NULL DEFAULT 1,
                 success INTEGER NOT NULL,
                 tests_passed INTEGER NOT NULL,
                 tool_calls INTEGER NOT NULL,
@@ -192,5 +191,13 @@ def init_database() -> None:
                 """
                 UPDATE evaluation_results
                 SET tests_passed = success
+                """
+            )
+        if "repeat_index" not in evaluation_columns:
+            # 历史数据没有显式重复序号，按旧行为统一视为第 1 次运行。
+            conn.execute(
+                """
+                ALTER TABLE evaluation_results
+                ADD COLUMN repeat_index INTEGER NOT NULL DEFAULT 1
                 """
             )

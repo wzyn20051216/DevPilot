@@ -1,10 +1,10 @@
 """! @brief Benchmark 数据集加载器。"""
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 from .models import BenchmarkCase
-
 
 # 本文件位于 backend/src/evals，向上两级正好是 backend。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -53,3 +53,28 @@ def get_fixture_path(case: BenchmarkCase) -> Path:
     """! @brief 返回用例对应的只读基准仓库路径。"""
 
     return REPO_DIR / case.repo_fixture
+
+
+def calculate_dataset_fingerprint() -> str:
+    """! @brief 计算 case 定义和 fixture 源码的稳定 SHA-256 指纹。
+
+    指纹写入实验配置后，可以证明两次运行使用的是同一版数据集。生成文件、
+    缓存和嵌套 Git 元数据不会参与计算，避免本地执行测试改变指纹。
+
+    @return 64 位十六进制 SHA-256 字符串。
+    """
+
+    digest = sha256()
+    paths = [*CASE_DIR.glob("*.json"), *REPO_DIR.rglob("*")]
+    for path in sorted(item for item in paths if item.is_file()):
+        relative = path.relative_to(BENCHMARK_ROOT)
+        if relative == Path("audit_report.json") or any(
+            part in {"__pycache__", ".pytest_cache", ".git", ".git-local-backup"}
+            for part in relative.parts
+        ) or path.suffix in {".pyc", ".pyo"}:
+            continue
+        digest.update(relative.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()

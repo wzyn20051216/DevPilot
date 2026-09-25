@@ -7,6 +7,7 @@
 
 import argparse
 import json
+import platform
 import shutil
 import subprocess
 from collections.abc import Iterable
@@ -22,12 +23,17 @@ from ..config import settings
 from ..database.connection import init_database
 from ..database.evaluation_repository import evaluation_repository
 from ..models.agent_state import AgentEvent
-from ..tools.test_tool import run_tests
 from ..rag.embedder import MODEL_NAME
-from .dataset import PROJECT_ROOT, get_fixture_path, load_benchmark_cases, load_case
+from ..tools.test_tool import run_tests
+from .dataset import (
+    PROJECT_ROOT,
+    calculate_dataset_fingerprint,
+    get_fixture_path,
+    load_benchmark_cases,
+    load_case,
+)
 from .metrics import summarize_results
 from .models import BenchmarkCase, EvaluationResult, EvaluationVariant
-
 
 EVAL_WORKSPACE_ROOT = PROJECT_ROOT / "data" / "eval_workspaces"
 EXPERIMENT_ROOT = PROJECT_ROOT / "data" / "experiments"
@@ -190,6 +196,7 @@ def evaluate_case(
     case: BenchmarkCase,
     variant: EvaluationVariant,
     run_id: str | None = None,
+    repeat_index: int = 1,
     persist: bool = True,
 ) -> EvaluationResult:
     """! @brief 在独立 Workspace 中执行并验证一个 case/variant。
@@ -197,6 +204,7 @@ def evaluate_case(
     @param case Benchmark 输入。
     @param variant 单/多 Agent 与 RAG 开关组合。
     @param run_id 批次 ID；省略时自动生成。
+    @param repeat_index 同一 case/variant 的重复实验序号。
     @param persist 是否写入 evaluation_results，测试时可关闭。
     @return 包含正确性、效率、耗时和 Token 的 EvaluationResult。
     """
@@ -214,7 +222,9 @@ def evaluate_case(
         # 无论 Agent 是否正确结束，都让独立测试裁判检查最终文件状态。
         # 这能区分“协议输出失败但代码已修好”和“代码确实仍然错误”。
         verification = verify_case(case, workspace)
-    except Exception as exc:
+    # Benchmark 必须把任意 Agent、Sandbox 或 verifier 故障记录为一条失败样本，
+    # 否则批次会中断并产生幸存者偏差，因此这里有意捕获执行边界的所有异常。
+    except Exception as exc:  # noqa: BLE001
         execution_error = f"{type(exc).__name__}: {exc}"
 
     elapsed_seconds = perf_counter() - started_at
@@ -230,6 +240,7 @@ def evaluate_case(
         run_id=actual_run_id,
         case_id=case.id,
         variant=variant,
+        repeat_index=repeat_index,
         # success 比 tests_passed 更严格：代码测试通过且 Agent/编排协议没有
         # error 事件才算本次架构完整成功，二者分开后论文分析更准确。
         success=bool(verification.get("passed")) and execution_error is None,
@@ -277,15 +288,19 @@ def save_experiment_config(
         "created_at": datetime.now(UTC).isoformat(),
         "model": settings.llm_model,
         "temperature": 0.2,
+        "random_seed": 42,
         "repeats": repeats,
         "max_single_iterations": 12,
         "max_coder_iterations": 8,
         "max_repair_rounds": 2,
         "benchmark_cases": len(cases),
         "case_ids": [case.id for case in cases],
+        "dataset_sha256": calculate_dataset_fingerprint(),
         "variants": list(VARIANTS),
         "rag": "BM25 + Embedding + RRF",
         "embedding_model": MODEL_NAME,
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
     }
     config_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -324,7 +339,13 @@ def run_full_experiment(repeats: int = 3) -> str:
                     f"[{completed}/{total}] repeat={repeat_index} "
                     f"case={case.id} variant={variant}"
                 )
-                result = evaluate_case(case, variant, run_id=run_id, persist=True)
+                result = evaluate_case(
+                    case,
+                    variant,
+                    run_id=run_id,
+                    repeat_index=repeat_index,
+                    persist=True,
+                )
                 print(
                     f"  success={result.success} tests={result.tests_passed} "
                     f"elapsed={result.elapsed_seconds:.2f}s"

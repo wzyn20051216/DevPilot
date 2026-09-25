@@ -5,7 +5,6 @@ from pathlib import Path
 
 from ..database.evaluation_repository import evaluation_repository
 
-
 EXPORT_DIR = Path(__file__).resolve().parents[2] / "data" / "eval_exports"
 
 
@@ -27,6 +26,7 @@ def export_results_csv(run_id: str | None = None) -> Path:
                 "run_id",
                 "case_id",
                 "variant",
+                "repeat_index",
                 "success",
                 "tests_passed",
                 "elapsed_seconds",
@@ -47,6 +47,7 @@ def export_results_csv(run_id: str | None = None) -> Path:
                     item.run_id,
                     item.case_id,
                     item.variant,
+                    item.repeat_index,
                     item.success,
                     item.tests_passed,
                     item.elapsed_seconds,

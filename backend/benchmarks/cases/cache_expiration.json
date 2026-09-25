@@ -1,0 +1,12 @@
+{
+  "id": "cache_expiration",
+  "title": "实现可测试的缓存过期策略",
+  "description": "缓存层忽略统一 TTL，并直接依赖系统时间，导致过期逻辑不可测试。",
+  "difficulty": "hard",
+  "category": "configuration",
+  "tags": ["multi_file", "time", "dependency_injection", "backward_compatibility"],
+  "repo_fixture": "cache_expiration_repo",
+  "task": "实现 Cache 的 TTL 过期：默认使用 config.DEFAULT_TTL，允许构造时注入 clock，get() 在 now >= expires_at 时删除并返回 None，同时保持 Cache() 无参数调用兼容。不要修改测试文件。",
+  "verification_target": "tests/test_cache.py",
+  "timeout_seconds": 120
+}

@@ -9,7 +9,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 EvaluationVariant = Literal[
     "single_no_rag",
     "single_rag",
@@ -55,6 +54,7 @@ class EvaluationResult(BaseModel):
     run_id: str = Field(description="同一批实验共享的运行标识")
     case_id: str
     variant: EvaluationVariant
+    repeat_index: int = Field(default=1, ge=1, description="同一配置的重复实验序号")
     success: bool
     tests_passed: bool = Field(description="独立 Verifier 的真实测试结果")
     tool_calls: int = Field(default=0, ge=0)

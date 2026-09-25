@@ -72,6 +72,18 @@ flowchart LR
 
 评测框架比较 `single_no_rag`、`single_rag`、`multi_no_rag` 和 `multi_rag` 四种 Variant，记录成功率、测试通过率、工具调用、迭代、耗时、Token 和修复轮数。Dashboard API 还提供难度分组、配对消融、Bootstrap 置信区间和 Wilcoxon 检验结果。
 
+当前数据集包含 9 个可执行 case，easy / medium / hard 各 3 个。提交前的自动审计会确认每个 fixture 文件完整且初始 verifier 必须失败，审计结果见 [`backend/benchmarks/audit_report.json`](backend/benchmarks/audit_report.json)。
+
+```powershell
+# 不调用 LLM：审计数据集结构和初始失败状态
+uv run python -m backend.src.evals.audit
+
+# 调用已配置的 LLM：四组架构各重复 3 次，共 108 次 Agent 任务
+uv run python -m backend.src.evals.runner --full --repeats 3
+```
+
+正式实验会把 `repeat_index`、模型、参数、数据集 SHA-256、Python 版本和运行平台写入配置快照。原始结果进入 SQLite，并可导出 CSV 后再做配对统计；不要把单次 pilot 结果当成最终性能结论。
+
 ## Quick Start
 
 要求：Python 3.12、[uv](https://docs.astral.sh/uv/)、Node.js 22、Git。执行 Sandbox 或 Compose 演示时还需要 Docker Desktop。
@@ -126,6 +138,9 @@ docker compose up --build
 | `LLM_API_KEY` | OpenAI-compatible API Key | empty |
 | `LLM_BASE_URL` | OpenAI-compatible endpoint | empty |
 | `LLM_MODEL` | 模型名称 | empty |
+| `LLM_TIMEOUT_SECONDS` | 单次 LLM 请求超时秒数 | `60` |
+| `LLM_MAX_RETRIES` | LLM 瞬时故障最大重试次数 | `2` |
+| `MCP_TIMEOUT_SECONDS` | Repository MCP 调用超时秒数 | `30` |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | GitHub MCP 凭据 | empty |
 | `DATABASE_PATH` | SQLite 文件路径 | `backend/data/devpilot.db` |
 | `CORS_ORIGINS` | 允许直连 FastAPI 的浏览器来源 | localhost |

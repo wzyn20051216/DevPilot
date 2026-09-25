@@ -14,17 +14,19 @@ class EvaluationRepository:
             conn.execute(
                 """
                 INSERT INTO evaluation_results (
-                    run_id, case_id, variant, success, tests_passed, tool_calls,
+                    run_id, case_id, variant, repeat_index, success,
+                    tests_passed, tool_calls,
                     iterations, repair_rounds, elapsed_seconds,
                     prompt_tokens, completion_tokens, total_tokens,
                     workspace_path, error, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.run_id,
                     result.case_id,
                     result.variant,
+                    result.repeat_index,
                     int(result.success),
                     int(result.tests_passed),
                     result.tool_calls,

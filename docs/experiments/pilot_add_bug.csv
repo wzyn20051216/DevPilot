@@ -1,0 +1,5 @@
+run_id,case_id,variant,repeat_index,success,tests_passed,tool_calls,iterations,repair_rounds,elapsed_seconds,prompt_tokens,completion_tokens,total_tokens,created_at
+ec01ffcc48b84544aeed62f3ca831368,add_bug,single_no_rag,1,true,true,7,5,0,100.484967,7360,408,7768,2026-09-23T13:31:21.022072Z
+ec01ffcc48b84544aeed62f3ca831368,add_bug,single_rag,1,true,true,6,5,0,81.655349,7892,417,8309,2026-09-23T13:32:42.716829Z
+ec01ffcc48b84544aeed62f3ca831368,add_bug,multi_no_rag,1,true,true,21,17,0,313.418776,22282,2331,24613,2026-09-23T13:37:56.190098Z
+ec01ffcc48b84544aeed62f3ca831368,add_bug,multi_rag,1,true,true,24,17,0,323.129897,25995,4261,30256,2026-09-23T13:43:19.370318Z

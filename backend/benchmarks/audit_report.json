@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-25T02:31:46.324771+00:00",
+  "dataset_sha256": "a7ab1c278d66c5f1d7dfba8df44426ca0f208827bf9545e1d41b957cf18a2254",
+  "case_count": 9,
+  "difficulty_counts": {
+    "easy": 3,
+    "hard": 3,
+    "medium": 3
+  },
+  "category_counts": {
+    "bugfix": 2,
+    "configuration": 2,
+    "cross_module": 2,
+    "feature": 1,
+    "validation": 2
+  },
+  "baseline_executed": true,
+  "valid": true,
+  "cases": [
+    {
+      "case_id": "add_bug",
+      "difficulty": "easy",
+      "category": "bugfix",
+      "fixture_exists": true,
+      "verification_target_exists": true,
+      "baseline_failed": true,
+      "baseline_exit_code": 1,
+      "elapsed_seconds": 0.579305
+    },
+    {
+      "case_id": "cache_expiration",
+      "difficulty": "hard",
+      "category": "configuration",
+      "fixture_exists": true,
+      "verification_target_exists": true,
+      "baseline_failed": true,
+      "baseline_exit_code": 1,
+      "elapsed_seconds": 0.605747
+    },
+    {
+      "case_id": "config_timeout",
+      "difficulty": "medium",
+      "category": "configuration",
+      "fixture_exists": true,
+      "verification_target_exists": true,
+      "baseline_failed": true,
+      "baseline_exit_code": 1,
+      "elapsed_seconds": 0.566081
+    },
+    {
+      "case_id": "email_normalization",
+      "difficulty": "easy",
+      "category": "validation",
+      "fixture_exists": true,
+      "verification_target_exists": true,
+      "baseline_failed": true,
+      "baseline_exit_code": 1,
+      "elapsed_seconds": 0.590096
+    },
+    {
+      "case_id": "inventory_removal",
+      "difficulty": "easy",
+      "category": "bugfix",
+      "fixture_exists": true,
+      "verification_target_exists": true,
+      "baseline_failed": true,
+      "baseline_exit_code": 1,
+      "elapsed_seconds": 0.592679
+    },
+    {
+      "case_id": "order_total",
+      "difficulty": "medium",
+      "category": "cross_module",
+      "fixture_exists": true,
+      "verification_target_exists": true,
+      "baseline_failed": true,
+      "baseline_exit_code": 1,
+      "elapsed_seconds": 0.603676
+    },
+    {
+      "case_id": "pagination_options",
+      "difficulty": "medium",
+      "category": "feature",
+      "fixture_exists": true,
+      "verification_target_exists": true,
+      "baseline_failed": true,
+      "baseline_exit_code": 1,
+      "elapsed_seconds": 0.578477
+    },
+    {
+      "case_id": "request_timeout",
+      "difficulty": "hard",
+      "category": "cross_module",
+      "fixture_exists": true,
+      "verification_target_exists": true,
+      "baseline_failed": true,
+      "baseline_exit_code": 1,
+      "elapsed_seconds": 0.574696
+    },
+    {
+      "case_id": "role_permissions",
+      "difficulty": "hard",
+      "category": "validation",
+      "fixture_exists": true,
+      "verification_target_exists": true,
+      "baseline_failed": true,
+      "baseline_exit_code": 1,
+      "elapsed_seconds": 0.60648
+    }
+  ]
+}

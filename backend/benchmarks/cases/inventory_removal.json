@@ -1,0 +1,12 @@
+{
+  "id": "inventory_removal",
+  "title": "修复库存扣减边界",
+  "description": "库存扣减函数在库存不足时产生负数，而且零数量也被静默接受。",
+  "difficulty": "easy",
+  "category": "bugfix",
+  "tags": ["single_file", "boundary", "exception"],
+  "repo_fixture": "inventory_removal_repo",
+  "task": "修复 inventory.py 的 remove_stock：数量必须大于 0，库存不足时抛出 ValueError，成功时返回剩余库存。不要修改测试文件。",
+  "verification_target": "tests/test_inventory.py",
+  "timeout_seconds": 120
+}
