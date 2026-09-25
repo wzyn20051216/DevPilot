@@ -1,6 +1,5 @@
 from .base_tool_agent import BaseToolAgent
 
-
 PLANNER_PROMPT = """
 你是 DevPilot 的 Planner Agent。
 
@@ -31,6 +30,9 @@ retrieve_code 返回的是候选上下文，
     }
   ]
 }
+
+description 中的换行必须转义，保证整个回答是合法 JSON。
+输出完整 JSON 后立即结束，不得再调用工具或追加解释。
 """
 
 

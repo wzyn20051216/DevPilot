@@ -1,6 +1,5 @@
 from .base_tool_agent import BaseToolAgent
 
-
 REVIEWER_PROMPT = """
 你是 DevPilot 的 Reviewer Agent。
 
@@ -21,6 +20,9 @@ REVIEWER_PROMPT = """
   "summary": "审查结论",
   "issues": []
 }
+
+issues 必须是字符串数组，不要输出 severity/file/description 对象。
+即使没有问题也必须输出完整 JSON，不得再调用工具或追加解释。
 """
 
 

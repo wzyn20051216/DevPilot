@@ -6,12 +6,19 @@
 import json
 from collections.abc import Iterator
 
+from ..models.agent_state import (
+    AgentEvent,
+    AgentState,
+    PlannerOutput,
+    PlanStep,
+    ReviewerOutput,
+    TesterOutput,
+)
+from ..services.structured_output import parse_structured_output
 from .code_agent import CodeAgent
 from .planner_agent import PlannerAgent
 from .reviewer_agent import ReviewerAgent
 from .tester_agent import TesterAgent
-from ..models.agent_state import AgentEvent, AgentState, PlannerOutput, PlanStep, ReviewerOutput, TesterOutput
-from ..services.structured_output import parse_structured_output
 
 
 def _consume_agent(
@@ -88,6 +95,7 @@ class DevPilotOrchestrator:
         """
         events: list[AgentEvent] = []
         tester_answer = ""
+        observed_report: TesterOutput | None = None
         saw_error = False  # 记录 tester 是否中途抛过 error（如达到最大迭代次数）
         for event in self.tester.run_stream(question):
             events.append(event)
@@ -95,6 +103,12 @@ class DevPilotOrchestrator:
                 tester_answer = event.message
             elif event.type == "error":
                 saw_error = True
+            elif event.type == "tool_result" and "test_report" in event.data:
+                # run_test 是独立执行器给出的机器结果，可信度高于
+                # LLM 随后用自然语言重述的 JSON。先保留该事实作兜底。
+                observed_report = TesterOutput.model_validate(
+                    event.data["test_report"]
+                )
 
         report: TesterOutput | None = None
         # 情况 1：tester 中途报错（例如达到 max_iterations），
@@ -104,13 +118,18 @@ class DevPilotOrchestrator:
             return events, None
 
         # 情况 2：tester 有 final 产出，尝试解析成 TesterOutput。
-        try:
-            report = parse_structured_output(
-                tester_answer,
-                TesterOutput,
-            )
-        except Exception:
-            report = None
+        # 若只是最终 JSON 格式有瑕疵，但 run_test 已返回真实结果，
+        # 则使用机器结果，避免把「测试通过」错判为「流程失败」。
+        if tester_answer:
+            try:
+                report = parse_structured_output(
+                    tester_answer,
+                    TesterOutput,
+                )
+            except ValueError:
+                report = observed_report
+        else:
+            report = observed_report
         return events, report
 
     def run_stream(self, question: str) -> Iterator[AgentEvent]:
@@ -148,7 +167,7 @@ class DevPilotOrchestrator:
                 PlannerOutput,
             )
             state.plan = planner_output.steps
-        except Exception as exc:
+        except ValueError as exc:
             state.status = "failed"
             yield AgentEvent(type="error", agent="orchestrator", message=f"Plan 解析失败：{exc}")
             return
@@ -364,7 +383,7 @@ class DevPilotOrchestrator:
                 reviewer_answer,
                 ReviewerOutput,
             )
-        except Exception as exc:
+        except ValueError as exc:
             state.status = "failed"
             yield AgentEvent(
                 type="error",

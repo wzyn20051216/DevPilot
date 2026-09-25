@@ -1,7 +1,8 @@
 #把现有 CodeAgent 抽成基础 Agent
 import json
-from typing import Any
 from collections.abc import Iterator
+from typing import Any
+
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageFunctionToolCallParam,
@@ -41,6 +42,17 @@ class BaseToolAgent:
         self.allowed_tools: set[str] = set(allowed_tools)
         self.max_iterations: int = max_iterations
         self.client: Any = create_client()
+
+    @staticmethod
+    def _accumulate_usage(state: AgentState, response: Any) -> None:
+        """! @brief 将单次 LLM 请求的 Token 用量累加到 Agent 状态。"""
+
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        state.prompt_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
+        state.completion_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
+        state.total_tokens += int(getattr(usage, "total_tokens", 0) or 0)
 
     def run_stream(self, question: str) -> Iterator[AgentEvent]:
         """流式执行 agent 的 tool-calling 循环，边跑边产出事件。
@@ -117,17 +129,7 @@ class BaseToolAgent:
                 )
                 # Usage 属于本次 LLM 请求，不包含前几轮，所以每轮都要累加。
                 # 使用 getattr 兼容不返回 usage 或字段为空的 OpenAI 兼容服务。
-                usage = getattr(response, "usage", None)
-                if usage is not None:
-                    state.prompt_tokens += int(
-                        getattr(usage, "prompt_tokens", 0) or 0
-                    )
-                    state.completion_tokens += int(
-                        getattr(usage, "completion_tokens", 0) or 0
-                    )
-                    state.total_tokens += int(
-                        getattr(usage, "total_tokens", 0) or 0
-                    )
+                self._accumulate_usage(state, response)
                 message = response.choices[0].message
 
                 # -------------------------
@@ -226,7 +228,7 @@ class BaseToolAgent:
                             repo_path=self.repo_path,
                             allow_tools=self.allowed_tools,
                         )
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         # 工具异常也转换成 observation 回传给模型，使模型有机会
                         # 修正参数或选择其它工具，而不是立即终止整个 Agent。
                         result = {"error": str(exc)}
@@ -267,16 +269,28 @@ class BaseToolAgent:
                     # -------------------------
                     # 12. Tool Result Event
                     # -------------------------
+                    event_data: dict[str, Any] = {
+                        "tool": tool_name,
+                        "arguments": arguments,
+                        "result_preview": str(result)[:500],
+                    }
+                    # Tester 的 run_test 返回值是可信的机器事实。将精简的
+                    # 结构化报告放入事件，供 Orchestrator 在 LLM 最终 JSON
+                    # 格式有瑕疵时兜底，不携带未截断的任意工具输出。
+                    if tool_name == "run_test" and state.test_report is not None:
+                        test_report_data = state.test_report.model_dump()
+                        # SSE 事件只需要关键尾部用于展示和兜底，
+                        # 避免把 Sandbox 允许的整段输出复制进事件流。
+                        test_report_data["stdout"] = state.test_report.stdout[-4_000:]
+                        test_report_data["stderr"] = state.test_report.stderr[-4_000:]
+                        event_data["test_report"] = test_report_data
+
                     yield AgentEvent(
                         type="tool_result",
                         agent=self.name,
                         iteration=iteration,
                         message=f"工具 {tool_name} 执行完成",
-                        data={
-                            "tool": tool_name,
-                            "arguments": arguments,
-                            "result_preview": str(result)[:500],
-                        },
+                        data=event_data,
                     )
 
                     # -------------------------
@@ -304,18 +318,42 @@ class BaseToolAgent:
             # -------------------------
             # 14. 达到最大迭代次数
             # -------------------------
-            else:
-                # 这是 Python 的 for...else：只有循环自然耗尽、期间没有 return
-                # 时才进入这里，表示模型连续请求工具却始终没有给出最终答案。
+            # 工具轮数耗尽并不代表任务失败：最后一轮工具结果
+            # 刚回填到上下文，模型还没获得根据它生成最终答案的机会。
+            # 追加一次禁止工具的收尾请求，它不再扩大工具循环。
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "工具调用阶段已结束。现在不得再调用工具，"
+                        "请立即按 system prompt 要求输出最终结果。"
+                    ),
+                }
+            )
+            final_response = self.client.chat.completions.create(
+                model=settings.llm_model,
+                messages=messages,
+                tools=get_tool_definitions(
+                    repo_path=self.repo_path,
+                    allowed_tools=self.allowed_tools,
+                ),
+                tool_choice="none",
+                temperature=0.0,
+            )
+            self._accumulate_usage(state, final_response)
+            final_message = final_response.choices[0].message
+            if final_message.tool_calls or not final_message.content:
                 state.status = "failed"
                 yield AgentEvent(
                     type="error",
                     agent=self.name,
                     iteration=state.iteration,
-                    message="agent 达到最大迭代次数，任务仍未正常完成",
+                    message="agent 达到最大迭代次数且未产出最终结果",
                     data={
                         "iteration": state.iteration,
-                        "tool_calls": [item.model_dump() for item in state.tool_calls],
+                        "tool_calls": [
+                            item.model_dump() for item in state.tool_calls
+                        ],
                         "usage": {
                             "prompt_tokens": state.prompt_tokens,
                             "completion_tokens": state.completion_tokens,
@@ -325,10 +363,30 @@ class BaseToolAgent:
                 )
                 return
 
+            state.status = "completed"
+            state.answer = final_message.content
+            yield AgentEvent(
+                type="final",
+                agent=self.name,
+                iteration=state.iteration,
+                message=state.answer,
+                data={
+                    "answer": state.answer,
+                    "iteration": state.iteration,
+                    "tool_calls": [item.model_dump() for item in state.tool_calls],
+                    "usage": {
+                        "prompt_tokens": state.prompt_tokens,
+                        "completion_tokens": state.completion_tokens,
+                        "total_tokens": state.total_tokens,
+                    },
+                },
+            )
+            return
+
         # -------------------------
         # 15. Agent 本身发生异常
         # -------------------------
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             state.status = "failed"
             yield AgentEvent(
                 type="error",

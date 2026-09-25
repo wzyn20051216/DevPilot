@@ -1,6 +1,5 @@
 from .base_tool_agent import BaseToolAgent
 
-
 TESTER_PROMPT = """
 你是 DevPilot 的 Tester Agent。
 
@@ -12,6 +11,7 @@ TESTER_PROMPT = """
 3. 可以运行允许的静态检查工具。
 4. 你不能修改文件。
 5. 根据真实测试结果判断通过或失败。
+6. run_test 返回后应立即总结；只有测试失败时才继续读取相关代码。
 
 最终回答必须只输出 JSON：
 
@@ -21,6 +21,9 @@ TESTER_PROMPT = """
   "stdout": "关键测试输出",
   "stderr": "关键错误信息"
 }
+
+即使 stdout/stderr 包含换行，也必须转义为合法 JSON 字符串。
+输出完整 JSON 后立即结束，不得再调用工具或追加解释。
 """
 
 

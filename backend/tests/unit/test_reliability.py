@@ -4,7 +4,7 @@ import asyncio
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import pytest
 from pytest import MonkeyPatch
@@ -12,8 +12,10 @@ from pytest import MonkeyPatch
 from backend.src import llm_client
 from backend.src.agents import base_tool_agent
 from backend.src.agents.base_tool_agent import BaseToolAgent
+from backend.src.agents.orchestrator import DevPilotOrchestrator
 from backend.src.exceptions import ExternalServiceError
 from backend.src.mcp_clients import repository_client
+from backend.src.models.agent_state import AgentEvent
 from backend.src.sandbox import docker_runner
 
 
@@ -32,13 +34,16 @@ def _response(
     )
 
 
-def _tool_call(arguments: str = "{}") -> SimpleNamespace:
+def _tool_call(
+    arguments: str = "{}",
+    name: str = "read_file",
+) -> SimpleNamespace:
     """构造一个 function tool call。"""
 
     return SimpleNamespace(
         id="call-1",
         type="function",
-        function=SimpleNamespace(name="read_file", arguments=arguments),
+        function=SimpleNamespace(name=name, arguments=arguments),
     )
 
 
@@ -47,8 +52,10 @@ class _FakeCompletions:
 
     def __init__(self, outcomes: list[Any]) -> None:
         self.outcomes = iter(outcomes)
+        self.requests: list[dict[str, Any]] = []
 
-    def create(self, **_: Any) -> Any:
+    def create(self, **kwargs: Any) -> Any:
+        self.requests.append(kwargs)
         outcome = next(self.outcomes)
         if isinstance(outcome, Exception):
             raise outcome
@@ -122,19 +129,95 @@ def test_agent_can_recover_after_tool_failure(monkeypatch: MonkeyPatch) -> None:
     assert "tool unavailable" in str(tool_result.data["result_preview"])
 
 
-def test_agent_reports_iteration_exhaustion(monkeypatch: MonkeyPatch) -> None:
-    """模型持续请求工具时必须在上限处停止。"""
+def test_agent_forces_final_answer_after_tool_iteration_limit(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """工具轮数耗尽后应禁用工具并请求一次最终回答。"""
 
     agent = _build_agent(
         monkeypatch,
-        [_response(tool_calls=[_tool_call()])],
+        [
+            _response(tool_calls=[_tool_call()]),
+            _response(content="finalized"),
+        ],
         max_iterations=1,
     )
     monkeypatch.setattr(base_tool_agent, "execute_tool", lambda **_: {"ok": True})
     events = list(agent.run_stream("question"))
 
-    assert events[-1].type == "error"
-    assert "最大迭代次数" in events[-1].message
+    assert events[-1].type == "final"
+    assert events[-1].message == "finalized"
+    completions = cast(Any, agent.client.chat.completions)
+    assert completions.requests[-1]["tool_choice"] == "none"
+    assert events[-1].data["usage"]["total_tokens"] == 10
+
+
+def test_run_test_event_exposes_structured_report(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """run_test 事件应携带可供 Orchestrator 兜底的测试事实。"""
+
+    agent = _build_agent(
+        monkeypatch,
+        [
+            _response(tool_calls=[_tool_call(name="run_test")]),
+            _response(content='{"passed": true}'),
+        ],
+    )
+    agent.allowed_tools = {"run_test"}
+    monkeypatch.setattr(
+        base_tool_agent,
+        "execute_tool",
+        lambda **_: {
+            "passed": True,
+            "returncode": 0,
+            "stdout": "x" * 5_000,
+            "stderr": "",
+            "timed_out": False,
+        },
+    )
+
+    events = list(agent.run_stream("test"))
+    tool_result = next(event for event in events if event.type == "tool_result")
+
+    assert tool_result.data["test_report"]["passed"] is True
+    assert tool_result.data["test_report"]["stdout"] == "x" * 4_000
+
+
+def test_tester_falls_back_to_run_test_result() -> None:
+    """最终 JSON 损坏时，Orchestrator 应使用 run_test 的真实结果。"""
+
+    class FakeTester:
+        def run_stream(self, _: str) -> Any:
+            yield AgentEvent(
+                type="tool_result",
+                agent="tester",
+                message="run_test 执行完成",
+                data={
+                    "tool": "run_test",
+                    "test_report": {
+                        "passed": True,
+                        "summary": "pytest returncode=0",
+                        "stdout": "1 passed",
+                        "stderr": "",
+                    },
+                },
+            )
+            yield AgentEvent(
+                type="final",
+                agent="tester",
+                message="{not valid json",
+            )
+
+    orchestrator = cast(
+        DevPilotOrchestrator,
+        cast(object, SimpleNamespace(tester=FakeTester())),
+    )
+    _, report = DevPilotOrchestrator._run_tester(orchestrator, "test")
+
+    assert report is not None
+    assert report.passed is True
+    assert report.stdout == "1 passed"
 
 
 def test_sandbox_timeout_is_returned_as_structured_result(

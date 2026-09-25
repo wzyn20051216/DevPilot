@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel
 
+from backend.src.models.agent_state import ReviewerOutput
 from backend.src.services.structured_output import parse_structured_output
 
 
@@ -35,3 +36,39 @@ def test_parse_markdown_json() -> None:
         DemoOutput,
     )
     assert result.value == 2
+
+
+def test_parse_json_with_unescaped_control_character() -> None:
+    """LLM 把真实换行写入字符串时仍应通过 Schema 校验。"""
+
+    result = parse_structured_output(
+        '{"name": "Dev\nPilot", "value": 3}',
+        DemoOutput,
+    )
+
+    assert result.name == "Dev\nPilot"
+
+
+def test_reviewer_output_normalizes_object_issues() -> None:
+    """Reviewer 常见的对象问题列表不应使编排流程失败。"""
+
+    result = parse_structured_output(
+        """
+        {
+          "approved": false,
+          "summary": "发现一个边界问题",
+          "issues": [
+            {
+              "severity": "minor",
+              "file": "app.py",
+              "description": "需要处理空值"
+            }
+          ]
+        }
+        """,
+        ReviewerOutput,
+    )
+
+    assert result.approved is False
+    assert len(result.issues) == 1
+    assert "app.py" in result.issues[0]

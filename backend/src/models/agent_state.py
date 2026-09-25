@@ -13,10 +13,11 @@
 简单说：State 是"现在整体什么样"，Event 是"刚刚发生了什么"，
 两者配合起来就能还原 agent 的一次完整执行过程。
 """
-from dataclasses import field
-from typing import Any, Literal, Annotated
+import json
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
 AgentStatus = Literal[
     "pending",      # 尚未开始
     "running",      # 正在执行
@@ -95,9 +96,37 @@ class ReviewerOutput(BaseModel):
 
     approved: bool
     summary: str = ""      # 审查结论
-    # issues 用 default_factory 保证每个实例有独立的 list，
-    # 避免可变默认值被多个实例共享（经典坑）。
-    issues: list[str] = field(default_factory=list)
+    # 对外始终保持 list[str]，让 API 和前端不需要处理多种结构。
+    issues: list[str] = Field(default_factory=list)
+
+    @field_validator("issues", mode="before")
+    @classmethod
+    def normalize_issues(cls, value: Any) -> list[str]:
+        """! @brief 兼容 LLM 常输出的对象形式问题列表。
+
+        Prompt 约定 ``issues`` 为字符串数组，但模型有时会输出
+        ``{"severity": ..., "description": ...}`` 对象。这种表达包含更多
+        信息，不应让整条编排流程失败；因此在模型边界统一序列化。
+        """
+
+        if value is None:
+            return []
+        if isinstance(value, (str, dict)):
+            value = [value]
+        if not isinstance(value, list):
+            value = [value]
+
+        normalized: list[str] = []
+        for issue in value:
+            if isinstance(issue, str):
+                normalized.append(issue)
+            elif isinstance(issue, dict):
+                normalized.append(
+                    json.dumps(issue, ensure_ascii=False, default=str)
+                )
+            else:
+                normalized.append(str(issue))
+        return normalized
 
 
 # 兼容旧代码里的命名。新代码优先使用 TesterOutput / ReviewerOutput。

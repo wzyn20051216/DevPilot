@@ -6,15 +6,9 @@
 parse_structured_output() 解析为指定的 Pydantic 模型。
 """
 
-from typing import TypeVar
+import json
 
 from pydantic import BaseModel
-
-
-StructuredModel = TypeVar(
-    "StructuredModel",
-    bound=BaseModel,
-)
 
 
 def extract_json_block(
@@ -82,7 +76,7 @@ def extract_json_block(
     return text
 
 
-def parse_structured_output(
+def parse_structured_output[StructuredModel: BaseModel](
     text: str,
     output_model: type[StructuredModel],
 ) -> StructuredModel:
@@ -97,8 +91,15 @@ def parse_structured_output(
     @exception ValueError 当找不到 JSON 或模型校验失败时由上层感知。
     """
     json_text = extract_json_block(text)
-    # 这里直接交给目标 Pydantic 模型解析：除 JSON 语法外，必填字段、
-    # Literal 枚举和嵌套模型也会在同一个入口完成校验。
-    return output_model.model_validate_json(
-        json_text
-    )
+    try:
+        # 快路径保留 Pydantic 原生 JSON 解析的性能和错误位置。
+        return output_model.model_validate_json(json_text)
+    except ValueError as strict_error:
+        # 部分 LLM 会把真实换行等控制字符放进 JSON 字符串，
+        # 其含义可恢复，但严格 JSON 解析会拒绝。只放宽语法解码，
+        # 解码后仍必须通过目标 Pydantic Schema，不会绕过业务校验。
+        try:
+            decoded = json.loads(json_text, strict=False)
+        except json.JSONDecodeError:
+            raise strict_error
+        return output_model.model_validate(decoded)

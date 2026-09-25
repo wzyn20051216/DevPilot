@@ -52,6 +52,17 @@ uv run python -m backend.src.evals.runner add_bug --variant single_no_rag
 
 详细方法、统计表、置信区间和图表见 [`experiments/formal_benchmark_2026-09-25.md`](experiments/formal_benchmark_2026-09-25.md)，逐次原始数据见 [`experiments/formal_benchmark_2026-09-25.csv`](experiments/formal_benchmark_2026-09-25.csv)。2026-09-23 的四组单题 pilot 仍保留在 [`experiments/pilot_add_bug.csv`](experiments/pilot_add_bug.csv)，仅用于评测链路冒烟验证。
 
+## 可靠性修复回归
+
+正式实验暴露了多 Agent 在「代码已通过测试、但结构化输出或收尾失败」上的问题。修复包括：
+
+- 兼容 Reviewer 输出对象形式的 `issues`，对外仍统一为字符串列表。
+- 宽容解码 LLM 输出中未转义的控制字符，解码后仍必须通过 Pydantic Schema。
+- 工具轮数耗尽后增加一次禁止工具调用的强制收尾，避免最后一次 observation 来不及被总结。
+- Tester 最终 JSON 损坏时，允许 Orchestrator 使用 `run_test` 的真实结构化结果。
+
+2026-09-25 对原实验中多次出现编排失败的 `request_timeout + multi_no_rag` 执行真实 LLM 回归：Run ID `5bc556304f1a414b857c3b297bc3c05a`，`success=true`、`tests_passed=true`、无 error。原始记录见 [`experiments/reliability_fix_smoke_2026-09-25.csv`](experiments/reliability_fix_smoke_2026-09-25.csv)。该单次 smoke 只验证修复链路，不替代 108 次正式实验的统计结论。
+
 ## 可复现性
 
 每个正式批次会保存模型名称、温度、随机种子、重复次数、case 列表、数据集 SHA-256、Embedding 模型、Python 版本和平台。每个 variant 在独立 Git workspace 中从同一错误基线开始，防止前一组修改污染后一组。

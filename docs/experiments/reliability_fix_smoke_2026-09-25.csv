@@ -1,0 +1,2 @@
+﻿run_id,case_id,variant,repeat_index,success,tests_passed,elapsed_seconds,tool_calls,iterations,repair_rounds,prompt_tokens,completion_tokens,total_tokens,workspace_path,error,created_at
+5bc556304f1a414b857c3b297bc3c05a,request_timeout,multi_no_rag,1,True,True,343.850332,26,16,0,33350,3979,37329,E:\desktop\DevPilot\backend\data\eval_workspaces\5bc556304f1a414b857c3b297bc3c05a\repeat-1\request_timeout\multi_no_rag,,2026-09-25T14:29:31.615453+00:00
