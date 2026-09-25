@@ -41,18 +41,16 @@ uv run python -m backend.src.evals.runner add_bug --variant single_no_rag
 
 `success` 要求 verifier 通过且执行协议中没有 error 事件；`tests_passed` 只表示最终代码通过独立测试。二者分开可识别“代码碰巧修好但 Agent 流程异常”的情况。
 
-## 已完成 Pilot
+## 已完成正式实验
 
-2026-09-23 已对 `add_bug` 执行一次四组真实实验，原始数据保存在 [`experiments/pilot_add_bug.csv`](experiments/pilot_add_bug.csv)：
+2026-09-25 已完成 `9 cases x 4 variants x 3 repeats = 108` 次真实 LLM 评测：
 
-| Variant | 测试通过 | Tool Calls | 迭代 | 耗时（秒） | Total Tokens |
-|---|---:|---:|---:|---:|---:|
-| `single_no_rag` | 1/1 | 7 | 5 | 100.48 | 7,768 |
-| `single_rag` | 1/1 | 6 | 5 | 81.66 | 8,309 |
-| `multi_no_rag` | 1/1 | 21 | 17 | 313.42 | 24,613 |
-| `multi_rag` | 1/1 | 24 | 17 | 323.13 | 30,256 |
+- Run ID：`68b84e0dd14f42afbe69788ed6260af3`
+- 完整性：108 条唯一记录，无缺失、无重复。
+- 成本：2,393,755 Total Tokens，累计执行耗时约 7.14 小时。
+- 结论：单 Agent 两组的端到端成功率和测试通过率均为 100%。多 Agent 的测试通过率为 96.3% / 100%，但端到端成功率仅为 51.9% / 59.3%，主要损失发生在结构化输出校验和多 Agent 编排收尾。
 
-该 pilot 只能证明评测链路能够产生完整记录，不能证明某个架构更优。单 Agent + RAG 在这一题少 1 次工具调用、快约 18.83 秒，但多用了 541 Token；多 Agent 在简单题上开销明显。正式结论必须等待 9 个 case 的配对重复实验。
+详细方法、统计表、置信区间和图表见 [`experiments/formal_benchmark_2026-09-25.md`](experiments/formal_benchmark_2026-09-25.md)，逐次原始数据见 [`experiments/formal_benchmark_2026-09-25.csv`](experiments/formal_benchmark_2026-09-25.csv)。2026-09-23 的四组单题 pilot 仍保留在 [`experiments/pilot_add_bug.csv`](experiments/pilot_add_bug.csv)，仅用于评测链路冒烟验证。
 
 ## 可复现性
 

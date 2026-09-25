@@ -7,7 +7,7 @@ import matplotlib
 
 # 服务器和 CI 通常没有图形桌面，必须在导入 pyplot 前切换无界面后端。
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: I001
 
 from ..database.evaluation_repository import evaluation_repository
 from .metrics import MetricValues, summarize_results
@@ -62,16 +62,69 @@ def _plot_metric(
 
 
 def plot_success_rate(run_id: str | None = None) -> Path:
-    """! @brief 生成任务成功率图。"""
+    """! @brief 并列展示端到端成功率与独立测试通过率。
 
-    return _plot_metric(
-        metric="success_rate",
-        filename="success_rate.png",
-        ylabel="Success Rate",
-        title="Task Success Rate",
-        value_format=lambda value: f"{value:.0%}",
-        run_id=run_id,
+    两者的差值能识别「代码已修好，但 Agent 编排流程异常结束」的情况，
+    因此质量图不能只展示其中一项。
+    """
+
+    summary = _get_summary(run_id=run_id)
+    variants = [variant for variant in VARIANT_ORDER if variant in summary]
+    if not variants:
+        raise ValueError("没有可用于绘图的评测数据")
+
+    success_rates = [float(summary[variant]["success_rate"]) for variant in variants]
+    test_pass_rates = [
+        float(summary[variant]["test_pass_rate"]) for variant in variants
+    ]
+    positions = list(range(len(variants)))
+    bar_width = 0.36
+
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    output = FIGURE_DIR / "success_rate.png"
+    figure, axis = plt.subplots(figsize=(9, 5))
+    success_bars = axis.bar(
+        [position - bar_width / 2 for position in positions],
+        success_rates,
+        width=bar_width,
+        color="#287271",
+        label="End-to-end success",
     )
+    test_bars = axis.bar(
+        [position + bar_width / 2 for position in positions],
+        test_pass_rates,
+        width=bar_width,
+        color="#E9C46A",
+        label="Verifier tests passed",
+    )
+    axis.set_xlabel("Agent Variant")
+    axis.set_ylabel("Rate")
+    axis.set_title("Agent Outcome Quality")
+    axis.set_xticks(positions, variants, rotation=20)
+    axis.set_ylim(0, 1.12)
+    axis.grid(axis="y", color="#D7DCE2", linewidth=0.8, alpha=0.7)
+    axis.set_axisbelow(True)
+    axis.spines["top"].set_visible(False)
+    axis.spines["right"].set_visible(False)
+    axis.legend(
+        frameon=False,
+        loc="center left",
+        bbox_to_anchor=(1.01, 0.5),
+    )
+    axis.bar_label(
+        success_bars,
+        labels=[f"{value:.0%}" for value in success_rates],
+        padding=3,
+    )
+    axis.bar_label(
+        test_bars,
+        labels=[f"{value:.0%}" for value in test_pass_rates],
+        padding=3,
+    )
+    figure.tight_layout()
+    figure.savefig(output, dpi=300, bbox_inches="tight")
+    plt.close(figure)
+    return output
 
 
 def plot_tool_calls(run_id: str | None = None) -> Path:
