@@ -9,8 +9,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import ClassVar, Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = BACKEND_ROOT / ".env"
@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str | None = None
     llm_model: str = ""
+    llm_timeout_seconds: float = Field(default=60.0, gt=0)
+    llm_max_retries: int = Field(default=2, ge=0, le=10)
+    mcp_timeout_seconds: float = Field(default=30.0, gt=0)
 
     github_personal_access_token: str | None = None
 

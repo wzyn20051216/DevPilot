@@ -14,7 +14,14 @@ def create_client() -> OpenAI:
     """
     settings.validate_llm()
 
-    return OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
+    # 超时和重试由统一配置控制。OpenAI SDK 只重试连接错误、408、409、429
+    # 与 5xx 等瞬时故障，不会把参数错误之类的永久失败反复发送。
+    return OpenAI(
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        timeout=settings.llm_timeout_seconds,
+        max_retries=settings.llm_max_retries,
+    )
 
 
 def chat_once(message: str) -> str:

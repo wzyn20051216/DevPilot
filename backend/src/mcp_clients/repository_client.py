@@ -14,11 +14,12 @@ from mcp import (
     Client,
     StdioServerParameters,
 )
-
 from openai.types.chat import (
     ChatCompletionFunctionToolParam,
 )
 
+from ..config import settings
+from ..exceptions import ExternalServiceError
 
 BACKEND_ROOT = (
     Path(__file__)
@@ -78,31 +79,39 @@ async def list_repository_tools(
         ChatCompletionFunctionToolParam
     ] = []
 
-    async with Client(server) as client:
+    try:
+        # timeout 覆盖子进程启动、MCP initialize 和 list_tools 全链路，
+        # 避免 stdio 子进程失去响应后把 Agent 请求永久挂住。
+        async with asyncio.timeout(settings.mcp_timeout_seconds):
+            async with Client(server) as client:
 
-        result = await client.list_tools()
+                result = await client.list_tools()
 
-        for tool in result.tools:
+                for tool in result.tools:
 
-            definition: (
-                ChatCompletionFunctionToolParam
-            ) = {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": (
-                        tool.description
-                        or ""
-                    ),
-                    "parameters": (
-                        tool.input_schema
-                    ),
-                },
-            }
+                    definition: (
+                        ChatCompletionFunctionToolParam
+                    ) = {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": (
+                                tool.description
+                                or ""
+                            ),
+                            "parameters": (
+                                tool.input_schema
+                            ),
+                        },
+                    }
 
-            definitions.append(
-                definition
-            )
+                    definitions.append(
+                        definition
+                    )
+    except TimeoutError as exc:
+        raise ExternalServiceError(
+            f"Repository MCP 工具发现超过 {settings.mcp_timeout_seconds:g} 秒"
+        ) from exc
 
     return definitions
 
@@ -123,55 +132,62 @@ async def call_repository_tool(
         repo_path
     )
 
-    async with Client(server) as client:
+    try:
+        async with asyncio.timeout(settings.mcp_timeout_seconds):
+            async with Client(server) as client:
 
-        result = await client.call_tool(
-            tool_name,
-            arguments,
-        )
-
-        # 高层 MCP Server 通常提供结构化结果
-        # structured_content 是 MCP 的机器可读结果，优先级高于下方文本块。
-        structured = (
-            result.structured_content
-        )
-
-        if structured is not None:
-
-            # MCP 对简单返回值有时会包装：
-            # {"result": ...}
-            if (
-                isinstance(
-                    structured,
-                    dict,
+                result = await client.call_tool(
+                    tool_name,
+                    arguments,
                 )
-                and set(
-                    structured.keys()
-                ) == {"result"}
-            ):
-                # 某些 MCP SDK 会把工具原始返回值统一包成 {"result": value}；
-                # 解一层后，上层仍能拿到与本地工具一致的数据形态。
-                return structured["result"]
 
-            return structured
+                # 高层 MCP Server 通常提供结构化结果
+                # structured_content 是 MCP 的机器可读结果，优先级高于下方文本块。
+                structured = (
+                    result.structured_content
+                )
 
-        # 兜底：读取文本 content
-        text_parts: list[str] = []
+                if structured is not None:
 
-        for block in result.content:
+                    # MCP 对简单返回值有时会包装：
+                    # {"result": ...}
+                    if (
+                        isinstance(
+                            structured,
+                            dict,
+                        )
+                        and set(
+                            structured.keys()
+                        ) == {"result"}
+                    ):
+                        # 某些 MCP SDK 会把工具原始返回值统一包成 {"result": value}；
+                        # 解一层后，上层仍能拿到与本地工具一致的数据形态。
+                        return structured["result"]
 
-            text = getattr(
-                block,
-                "text",
-                None,
-            )
+                    return structured
 
-            if isinstance(text, str):
-                text_parts.append(text)
+                # 兜底：读取文本 content
+                text_parts: list[str] = []
 
-        return "\n".join(
-            text_parts
-        )
+                for block in result.content:
+
+                    text = getattr(
+                        block,
+                        "text",
+                        None,
+                    )
+
+                    if isinstance(text, str):
+                        text_parts.append(text)
+
+                return "\n".join(
+                    text_parts
+                )
+    except TimeoutError as exc:
+        raise ExternalServiceError(
+            f"Repository MCP 工具 {tool_name} 超过 "
+            f"{settings.mcp_timeout_seconds:g} 秒"
+        ) from exc
 
 def list_repository_tools_sync(
     repo_path: str,
