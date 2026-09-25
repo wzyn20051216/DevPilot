@@ -90,6 +90,26 @@ def test_variants_use_independent_git_workspaces(
     assert (second / "calculator.py").read_text(encoding="utf-8") != "changed"
 
 
+def test_repeats_use_independent_workspaces(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """同一 case/variant 的重复实验不能覆盖上一轮 Git Workspace。"""
+
+    from backend.src.evals import runner
+
+    monkeypatch.setattr(runner, "EVAL_WORKSPACE_ROOT", tmp_path)
+    case = load_case("add_bug")
+    first = create_workspace(case, "single_no_rag", "test-run", repeat_index=1)
+    second = create_workspace(case, "single_no_rag", "test-run", repeat_index=2)
+
+    assert first != second
+    assert "repeat-1" in first.parts
+    assert "repeat-2" in second.parts
+    assert (first / ".git").is_dir()
+    assert (second / ".git").is_dir()
+
+
 def test_event_metrics_and_usage_are_aggregated() -> None:
     """多 Agent 的迭代和 Token 应求总和，而不是只取单个角色最大值。"""
 
@@ -280,6 +300,45 @@ def test_full_experiment_uses_one_run_id_and_saves_config(
     assert len(config["dataset_sha256"]) == 64
     assert config["random_seed"] == 42
     assert config["variants"] == list(VARIANTS)
+
+
+def test_full_experiment_resume_skips_persisted_combinations(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """断点续跑不得重复执行已经写入 SQLite 的付费组合。"""
+
+    from backend.src.evals import runner
+
+    calls: list[tuple[str, EvaluationVariant, int]] = []
+
+    def fake_evaluate_case(
+        case: BenchmarkCase,
+        variant: EvaluationVariant,
+        run_id: str | None = None,
+        repeat_index: int = 1,
+        persist: bool = True,
+    ) -> EvaluationResult:
+        assert run_id is not None
+        calls.append((case.id, variant, repeat_index))
+        result = _evaluation_result(case.id, variant)
+        result.run_id = run_id
+        result.repeat_index = repeat_index
+        if persist:
+            evaluation_repository.save_result(result)
+        return result
+
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "resume.db")
+    monkeypatch.setattr(runner, "EXPERIMENT_ROOT", tmp_path / "experiments")
+    monkeypatch.setattr(runner, "evaluate_case", fake_evaluate_case)
+
+    run_id = runner.run_full_experiment(repeats=1)
+    assert len(calls) == 9 * 4
+
+    calls.clear()
+    resumed_run_id = runner.run_full_experiment(repeats=1, run_id=run_id)
+    assert resumed_run_id == run_id
+    assert calls == []
 
 
 def test_repository_export_figures_and_summary_api(

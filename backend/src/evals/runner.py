@@ -83,11 +83,20 @@ def create_workspace(
     case: BenchmarkCase,
     variant: EvaluationVariant,
     run_id: str,
+    repeat_index: int = 1,
 ) -> Path:
     """! @brief 从只读 fixture 创建本次实验的独立 Git Workspace。"""
 
     source = get_fixture_path(case)
-    destination = EVAL_WORKSPACE_ROOT / run_id / case.id / variant
+    # 重复实验也必须使用独立目录。复用 case/variant 目录不仅会覆盖上一轮
+    # 证据，Windows 上还可能因 Git 对象仍被进程占用而无法删除。
+    destination = (
+        EVAL_WORKSPACE_ROOT
+        / run_id
+        / f"repeat-{repeat_index}"
+        / case.id
+        / variant
+    )
     if destination.exists():
         shutil.rmtree(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -210,7 +219,12 @@ def evaluate_case(
     """
 
     actual_run_id = run_id or uuid4().hex
-    workspace = create_workspace(case, variant, actual_run_id)
+    workspace = create_workspace(
+        case,
+        variant,
+        actual_run_id,
+        repeat_index=repeat_index,
+    )
     events: list[AgentEvent] = []
     execution_error: str | None = None
     verification: dict[str, Any] = {"passed": False}
@@ -309,13 +323,17 @@ def save_experiment_config(
     return config_path
 
 
-def run_full_experiment(repeats: int = 3) -> str:
+def run_full_experiment(
+    repeats: int = 3,
+    run_id: str | None = None,
+) -> str:
     """! @brief 运行全部难度、四种 variant 和指定重复次数的正式实验。
 
     全部结果共享一个 run_id。`evaluate_case` 已负责逐条持久化，本函数只负责编排，
     不重复写库。即使进程中途停止，已完成结果和实验配置仍会保留。
 
     @param repeats 每个 case/variant 的独立重复次数。
+    @param run_id 可选已有批次 ID；传入后跳过已持久化组合并断点续跑。
     @return 可用于 Dashboard 和统计分析的实验 run_id。
     """
 
@@ -325,15 +343,34 @@ def run_full_experiment(repeats: int = 3) -> str:
     if not cases:
         raise ValueError("没有可运行的 Benchmark case")
 
-    run_id = uuid4().hex
-    config_path = save_experiment_config(run_id, repeats, cases)
+    actual_run_id = run_id or uuid4().hex
+    config_path = EXPERIMENT_ROOT / actual_run_id / "config.json"
+    if run_id is None:
+        config_path = save_experiment_config(actual_run_id, repeats, cases)
+    elif not config_path.is_file():
+        raise FileNotFoundError(f"续跑实验配置不存在：{config_path}")
+
+    # 结果按 (repeat, case, variant) 去重。批次异常退出后再次启动时，已完成
+    # 组合不会重复消耗 Token，也不会向 SQLite 写入重复样本。
+    init_database()
+    completed_keys = {
+        (result.repeat_index, result.case_id, result.variant)
+        for result in evaluation_repository.get_results(run_id=actual_run_id)
+    }
     total = len(cases) * len(VARIANTS) * repeats
-    completed = 0
-    print(f"实验 {run_id} 已创建，配置：{config_path}")
+    completed = len(completed_keys)
+    action = "继续" if run_id is not None else "创建"
+    print(
+        f"实验 {actual_run_id} 已{action}，配置：{config_path}，"
+        f"已完成 {completed}/{total}"
+    )
 
     for repeat_index in range(1, repeats + 1):
         for case in cases:
             for variant in VARIANTS:
+                key = (repeat_index, case.id, variant)
+                if key in completed_keys:
+                    continue
                 completed += 1
                 print(
                     f"[{completed}/{total}] repeat={repeat_index} "
@@ -342,7 +379,7 @@ def run_full_experiment(repeats: int = 3) -> str:
                 result = evaluate_case(
                     case,
                     variant,
-                    run_id=run_id,
+                    run_id=actual_run_id,
                     repeat_index=repeat_index,
                     persist=True,
                 )
@@ -350,7 +387,8 @@ def run_full_experiment(repeats: int = 3) -> str:
                     f"  success={result.success} tests={result.tests_passed} "
                     f"elapsed={result.elapsed_seconds:.2f}s"
                 )
-    return run_id
+                completed_keys.add(key)
+    return actual_run_id
 
 
 def main() -> None:
@@ -370,6 +408,11 @@ def main() -> None:
         help="--full 模式下每组重复次数，默认 3",
     )
     parser.add_argument(
+        "--resume",
+        metavar="RUN_ID",
+        help="从已有正式实验批次断点续跑，并跳过已完成组合",
+    )
+    parser.add_argument(
         "--variant",
         choices=VARIANTS,
         action="append",
@@ -377,8 +420,11 @@ def main() -> None:
         help="只运行指定 variant；可重复传入，默认运行全部四组",
     )
     args = parser.parse_args()
-    if args.full:
-        run_id = run_full_experiment(repeats=args.repeats)
+    if args.full or args.resume:
+        run_id = run_full_experiment(
+            repeats=args.repeats,
+            run_id=args.resume,
+        )
         results = evaluation_repository.get_results(run_id=run_id)
     else:
         selected = tuple(args.variants) if args.variants else VARIANTS
