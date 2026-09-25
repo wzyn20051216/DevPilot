@@ -1,0 +1,4 @@
+"""请求超时边界配置。"""
+
+DEFAULT_TIMEOUT = 30
+MAX_TIMEOUT = 120

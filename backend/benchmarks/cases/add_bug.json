@@ -1,0 +1,12 @@
+{
+  "id": "add_bug",
+  "title": "修复 add 函数的错误实现",
+  "description": "calculator.py 中的 add 错误地执行了减法，测试要求 add(2, 3) == 5。",
+  "difficulty": "easy",
+  "category": "bugfix",
+  "tags": ["single_file", "arithmetic"],
+  "repo_fixture": "add_bug_repo",
+  "task": "修复 calculator.py 中 add 函数的实现，使现有测试通过。不要修改测试文件。",
+  "verification_target": "tests/test_calculator.py",
+  "timeout_seconds": 120
+}

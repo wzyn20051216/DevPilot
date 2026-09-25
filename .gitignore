@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.playwright-cli/
+.env
+.env.local
+backend/.env
+frontend/.env
+frontend/.env.local
+backend/data/logs/
+*.log
+
+# Benchmark fixture 的本地 Git 历史仅用于迁移备份，不随主仓库发布。
+backend/benchmarks/repos/**/.git-local-backup/

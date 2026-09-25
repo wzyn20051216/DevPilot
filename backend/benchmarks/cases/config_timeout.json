@@ -1,0 +1,12 @@
+{
+  "id": "config_timeout",
+  "title": "统一服务超时配置",
+  "description": "service.py 硬编码了错误的超时值，需要改为复用 config.py 中的配置。",
+  "difficulty": "medium",
+  "category": "configuration",
+  "tags": ["multi_file", "configuration"],
+  "repo_fixture": "config_timeout_repo",
+  "task": "修复 service.py 的超时配置，使 build_client() 使用 config.py 中的 DEFAULT_TIMEOUT。不要修改测试文件。",
+  "verification_target": "tests/test_service.py",
+  "timeout_seconds": 120
+}
