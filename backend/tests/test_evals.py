@@ -341,6 +341,102 @@ def test_full_experiment_resume_skips_persisted_combinations(
     assert calls == []
 
 
+def test_filtered_experiment_records_design_and_runs_requested_matrix(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """定向回归只应运行指定的 4 cases x 2 variants x 3 repeats。"""
+
+    from backend.src.evals import runner
+
+    calls: list[tuple[str, EvaluationVariant, int]] = []
+
+    def fake_evaluate_case(
+        case: BenchmarkCase,
+        variant: EvaluationVariant,
+        run_id: str | None = None,
+        repeat_index: int = 1,
+        persist: bool = True,
+    ) -> EvaluationResult:
+        assert run_id is not None
+        calls.append((case.id, variant, repeat_index))
+        result = _evaluation_result(case.id, variant)
+        result.run_id = run_id
+        result.repeat_index = repeat_index
+        return result
+
+    case_ids = [
+        "pagination_options",
+        "order_total",
+        "request_timeout",
+        "cache_expiration",
+    ]
+    variants: tuple[EvaluationVariant, ...] = ("multi_no_rag", "multi_rag")
+    monkeypatch.setattr(runner, "EXPERIMENT_ROOT", tmp_path / "experiments")
+    monkeypatch.setattr(runner, "evaluate_case", fake_evaluate_case)
+
+    run_id = runner.run_full_experiment(
+        repeats=3,
+        case_ids=case_ids,
+        variants=variants,
+    )
+
+    assert len(calls) == 24
+    assert {call[0] for call in calls} == set(case_ids)
+    assert {call[1] for call in calls} == set(variants)
+    assert {call[2] for call in calls} == {1, 2, 3}
+    config = json.loads(
+        (tmp_path / "experiments" / run_id / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert config["case_ids"] == case_ids
+    assert config["variants"] == list(variants)
+    assert config["repeats"] == 3
+
+
+def test_filtered_experiment_resume_uses_saved_design(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """断点续跑省略筛选参数时，必须沿用首次保存的实验矩阵。"""
+
+    from backend.src.evals import runner
+
+    calls: list[tuple[str, EvaluationVariant, int]] = []
+
+    def fake_evaluate_case(
+        case: BenchmarkCase,
+        variant: EvaluationVariant,
+        run_id: str | None = None,
+        repeat_index: int = 1,
+        persist: bool = True,
+    ) -> EvaluationResult:
+        assert run_id is not None
+        calls.append((case.id, variant, repeat_index))
+        result = _evaluation_result(case.id, variant)
+        result.run_id = run_id
+        result.repeat_index = repeat_index
+        if persist:
+            evaluation_repository.save_result(result)
+        return result
+
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "filtered-resume.db")
+    monkeypatch.setattr(runner, "EXPERIMENT_ROOT", tmp_path / "experiments")
+    monkeypatch.setattr(runner, "evaluate_case", fake_evaluate_case)
+
+    run_id = runner.run_full_experiment(
+        repeats=1,
+        case_ids=["request_timeout"],
+        variants=["multi_no_rag"],
+    )
+    assert calls == [("request_timeout", "multi_no_rag", 1)]
+
+    calls.clear()
+    runner.run_full_experiment(repeats=None, run_id=run_id)
+    assert calls == []
+
+
 def test_repository_export_figures_and_summary_api(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
