@@ -9,16 +9,15 @@ from mcp.server import MCPServer
 
 from ..tools.file_tool import (
     list_files as local_list_files,
+)
+from ..tools.file_tool import (
     read_files as local_read_file,
+)
+from ..tools.file_tool import (
     search_code as local_search_code,
 )
-
 from ..tools.git_tool import (
     git_diff as local_git_diff,
-)
-
-from ..tools.retrieval_tool import (
-    retrieve_code as local_retrieve_code,
 )
 
 
@@ -100,6 +99,11 @@ def create_repository_server(
         @param top_k 返回的代码片段数量。
         @return 相关代码片段及分数。
         """
+
+        # Tool Discovery 只需要函数签名，不应为此加载 Torch 和
+        # SentenceTransformers。把 RAG 依赖延迟到真正检索时导入，可让
+        # stdio MCP 子进程在资源紧张时仍稳定完成 30 秒内的握手。
+        from ..tools.retrieval_tool import retrieve_code as local_retrieve_code
 
         return local_retrieve_code(
             repo_path=repo_path,
