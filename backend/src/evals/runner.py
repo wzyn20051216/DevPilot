@@ -10,6 +10,7 @@ import json
 import platform
 import shutil
 import subprocess
+from fnmatch import fnmatch
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -146,7 +147,7 @@ def collect_usage(events: Iterable[AgentEvent]) -> tuple[int, int, int]:
     completion_tokens = 0
     total_tokens = 0
     for event in events:
-        if event.type not in {"final", "error"}:
+        if event.type not in {"final", "error", "cancelled"}:
             continue
         usage = event.data.get("usage") if isinstance(event.data, dict) else None
         if not isinstance(usage, dict):
@@ -157,11 +158,118 @@ def collect_usage(events: Iterable[AgentEvent]) -> tuple[int, int, int]:
     return prompt_tokens, completion_tokens, total_tokens
 
 
+def collect_timing(events: Iterable[AgentEvent]) -> tuple[float, float]:
+    """! @brief 汇总各 Agent 终止事件中的模型与工具耗时。"""
+
+    llm_seconds = 0.0
+    tool_seconds = 0.0
+    for event in events:
+        if event.type not in {"final", "error", "cancelled"}:
+            continue
+        timing = event.data.get("timing") if isinstance(event.data, dict) else None
+        if not isinstance(timing, dict):
+            continue
+        llm_seconds += float(timing.get("llm_seconds", 0.0) or 0.0)
+        tool_seconds += float(timing.get("tool_seconds", 0.0) or 0.0)
+    return llm_seconds, tool_seconds
+
+
+VERIFIER_PROTECTED_PATTERNS = (
+    "tests/**",
+    "test_*.py",
+    "**/test_*.py",
+    "**/tests/**",
+    "conftest.py",
+    "**/conftest.py",
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+)
+
+
+def _changed_paths(workspace: Path) -> tuple[list[str], list[str]]:
+    """! @brief 返回相对 HEAD 的新增/修改路径和删除路径。"""
+
+    modified = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=AM", "HEAD"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    deleted = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=D", "HEAD"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    return sorted(set(modified + untracked)), sorted(set(deleted))
+
+
+def _is_verifier_protected(path: str, case: BenchmarkCase) -> bool:
+    """! @brief 判断路径是否会影响独立裁判本身。"""
+
+    normalized = path.replace("\\", "/")
+    target = (case.verification_target or "").replace("\\", "/")
+    if target and (normalized == target or normalized.startswith(target.rstrip("/") + "/")):
+        return True
+    return any(fnmatch(normalized, pattern) for pattern in VERIFIER_PROTECTED_PATTERNS)
+
+
+def prepare_verification_workspace(case: BenchmarkCase, workspace: Path) -> Path:
+    """! @brief 把候选源码应用到一份带原始测试的干净裁判工作区。
+
+    Agent 可以查看公开测试，但其测试和测试配置改动不会进入最终验收。
+    """
+
+    changed, deleted = _changed_paths(workspace)
+    forbidden = [path for path in changed if _is_verifier_protected(path, case)]
+    forbidden.extend(deleted)
+    if forbidden:
+        raise ValueError("候选修改触及裁判保护路径: " + ", ".join(sorted(set(forbidden))))
+
+    destination = workspace.parent / f"{workspace.name}-verifier"
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(
+        get_fixture_path(case),
+        destination,
+        ignore=shutil.ignore_patterns(".git*", "__pycache__", ".pytest_cache", ".devpilot"),
+    )
+    for relative in changed:
+        source_path = workspace / relative
+        target_path = destination / relative
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+    return destination
+
+
 def verify_case(case: BenchmarkCase, workspace: Path) -> dict[str, Any]:
-    """! @brief 在 Agent 流程之外运行固定测试，得到客观验收结果。"""
+    """! @brief 在隔离的干净副本中运行固定测试，得到客观验收结果。"""
+
+    try:
+        verification_workspace = prepare_verification_workspace(case, workspace)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return {
+            "passed": False,
+            "returncode": None,
+            "timed_out": False,
+            "stdout": "",
+            "stderr": str(exc),
+            "sandboxed": True,
+        }
 
     return run_tests(
-        repo_path=str(workspace),
+        repo_path=str(verification_workspace),
         target=case.verification_target,
         timeout=case.timeout_seconds,
     )
@@ -244,6 +352,11 @@ def evaluate_case(
     elapsed_seconds = perf_counter() - started_at
     tool_calls, iterations, repair_rounds = collect_event_metrics(events)
     prompt_tokens, completion_tokens, total_tokens = collect_usage(events)
+    llm_seconds, tool_seconds = collect_timing(events)
+    estimated_cost = (
+        prompt_tokens * settings.llm_prompt_cost_per_million
+        + completion_tokens * settings.llm_completion_cost_per_million
+    ) / 1_000_000
 
     if not verification.get("passed") and not execution_error:
         stderr = str(verification.get("stderr", "")).strip()
@@ -266,6 +379,9 @@ def evaluate_case(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
+        llm_seconds=round(llm_seconds, 6),
+        tool_seconds=round(tool_seconds, 6),
+        estimated_cost=round(estimated_cost, 8),
         workspace_path=str(workspace),
         error=execution_error,
     )
@@ -305,7 +421,7 @@ def save_experiment_config(
         "temperature": 0.2,
         "random_seed": 42,
         "repeats": repeats,
-        "max_single_iterations": 12,
+        "max_single_iterations": 14,
         "max_coder_iterations": 8,
         "max_repair_rounds": 2,
         "benchmark_cases": len(cases),

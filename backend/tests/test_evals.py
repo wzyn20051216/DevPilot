@@ -7,6 +7,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
@@ -24,16 +25,24 @@ from backend.src.evals.analysis import (
 from backend.src.evals.audit import build_audit_report
 from backend.src.evals.dataset import (
     calculate_dataset_fingerprint,
+    get_fixture_path,
     load_benchmark_cases,
     load_case,
 )
 from backend.src.evals.metrics import summarize_results
 from backend.src.evals.models import BenchmarkCase, EvaluationResult, EvaluationVariant
+from backend.src.evals.real_world import (
+    _candidate_paths,
+    _failed_pytest_nodes,
+    _protected_candidate_paths,
+)
+from backend.src.evals.retrieval import score_retrieval
 from backend.src.evals.runner import (
     VARIANTS,
     collect_event_metrics,
     collect_usage,
     create_workspace,
+    prepare_verification_workspace,
 )
 from backend.src.main import app
 from backend.src.models.agent_state import AgentEvent
@@ -58,7 +67,96 @@ def test_dataset_covers_all_difficulty_levels() -> None:
     assert len(cases) == 9
     assert all(sum(item.difficulty == level for item in cases) == 3 for level in ("easy", "medium", "hard"))
     assert all(case.tags for case in cases)
+    assert all(case.retrieval_queries for case in cases)
     assert len(calculate_dataset_fingerprint()) == 64
+
+
+def test_retrieval_metrics_use_unique_files_and_first_relevant_rank() -> None:
+    """Recall@K 和 MRR 应按文件去重并使用首个相关文件排名。"""
+
+    recall, reciprocal_rank = score_retrieval(
+        ["noise.py", "target.py", "target.py", "other.py"],
+        ["target.py", "second.py"],
+    )
+
+    assert recall == 0.5
+    assert reciprocal_rank == 0.5
+
+
+def test_real_world_verifier_protects_tests_and_test_config() -> None:
+    """真实评测不得接受候选对测试和 pytest 配置的修改。"""
+
+    assert _protected_candidate_paths(
+        [
+            "src/package.py",
+            "tests/test_package.py",
+            "package/tests/helpers.py",
+            "src/module_test.py",
+            "setup.cfg",
+        ]
+    ) == [
+        "tests/test_package.py",
+        "package/tests/helpers.py",
+        "src/module_test.py",
+        "setup.cfg",
+    ]
+
+
+def test_real_world_audit_extracts_unstable_pytest_nodes() -> None:
+    """环境基线校准应只提取 pytest 摘要中的明确失败节点。"""
+
+    assert _failed_pytest_nodes(
+        {
+            "stdout": (
+                "FAILED tests/test_a.py::test_one - AssertionError\n"
+                "FAILED tests/test_b.py::test_value[hello world] - ValueError\n"
+                "ERROR tests/test_c.py::test_setup - RuntimeError\n"
+                "2 failed, 1 error, 3 passed\n"
+            )
+        }
+    ) == [
+        "tests/test_a.py::test_one",
+        "tests/test_b.py::test_value[hello world]",
+        "tests/test_c.py::test_setup",
+    ]
+
+
+def test_real_world_candidate_patch_includes_untracked_source(tmp_path: Path) -> None:
+    """真实评测必须把 Agent 新建的源码纳入候选补丁。"""
+
+    import subprocess
+
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
+    existing = tmp_path / "existing.py"
+    existing.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=DevPilot Test",
+            "-c",
+            "user.email=test@devpilot.local",
+            "commit",
+            "--quiet",
+            "-m",
+            "base",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+    (tmp_path / "new_module.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    assert _candidate_paths(tmp_path) == ["new_module.py"]
+    patch = subprocess.run(
+        ["git", "diff", "--binary", "HEAD", "--", "new_module.py"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "new file mode" in patch
+    assert "+VALUE = 2" in patch
 
 
 def test_all_benchmark_baselines_fail_before_agent_changes() -> None:
@@ -110,6 +208,46 @@ def test_repeats_use_independent_workspaces(
     assert (second / ".git").is_dir()
 
 
+def test_verifier_rejects_test_and_config_tampering(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """候选不得通过修改测试或 pytest 配置骗过独立裁判。"""
+
+    from backend.src.evals import runner
+
+    monkeypatch.setattr(runner, "EVAL_WORKSPACE_ROOT", tmp_path)
+    case = load_case("add_bug")
+    workspace = create_workspace(case, "single_no_rag", "tamper-test")
+    test_file = workspace / "tests" / "test_calculator.py"
+    test_file.write_text("def test_fake():\n    assert True\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="裁判保护路径"):
+        prepare_verification_workspace(case, workspace)
+
+
+def test_verifier_applies_only_candidate_source_changes(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """干净裁判副本应包含候选源码，并保留基线测试。"""
+
+    from backend.src.evals import runner
+
+    monkeypatch.setattr(runner, "EVAL_WORKSPACE_ROOT", tmp_path)
+    case = load_case("add_bug")
+    workspace = create_workspace(case, "single_no_rag", "clean-verifier")
+    calculator = workspace / "calculator.py"
+    calculator.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    verifier = prepare_verification_workspace(case, workspace)
+
+    assert "a + b" in (verifier / "calculator.py").read_text(encoding="utf-8")
+    assert (verifier / "tests" / "test_calculator.py").read_text(encoding="utf-8") == (
+        get_fixture_path(case) / "tests" / "test_calculator.py"
+    ).read_text(encoding="utf-8")
+
+
 def test_event_metrics_and_usage_are_aggregated() -> None:
     """多 Agent 的迭代和 Token 应求总和，而不是只取单个角色最大值。"""
 
@@ -132,10 +270,22 @@ def test_event_metrics_and_usage_are_aggregated() -> None:
                 "usage": {"prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23},
             },
         ),
+        AgentEvent(
+            type="cancelled",
+            agent="reviewer",
+            message="cancelled",
+            data={
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 1,
+                    "total_tokens": 6,
+                }
+            },
+        ),
     ]
 
     assert collect_event_metrics(events) == (1, 2, 1)
-    assert collect_usage(events) == (30, 5, 35)
+    assert collect_usage(events) == (35, 6, 41)
 
 
 def test_summary_groups_variants() -> None:

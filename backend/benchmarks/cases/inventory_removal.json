@@ -8,5 +8,8 @@
   "repo_fixture": "inventory_removal_repo",
   "task": "修复 inventory.py 的 remove_stock：数量必须大于 0，库存不足时抛出 ValueError，成功时返回剩余库存。不要修改测试文件。",
   "verification_target": "tests/test_inventory.py",
+  "retrieval_queries": [
+    {"query": "remove stock and reject invalid inventory quantities", "relevant_files": ["inventory.py"]}
+  ],
   "timeout_seconds": 120
 }

@@ -8,5 +8,8 @@
   "repo_fixture": "role_permissions_repo",
   "task": "修复资源编辑权限：只有 admin 或资源 owner 可以更新；未授权时抛出 PermissionError；service 必须复用 policy.can_edit，不得复制权限规则。不要修改测试文件。",
   "verification_target": "tests/test_resource_service.py",
+  "retrieval_queries": [
+    {"query": "authorization policy for admin or resource owner editing", "relevant_files": ["policy.py", "resource_service.py"]}
+  ],
   "timeout_seconds": 120
 }

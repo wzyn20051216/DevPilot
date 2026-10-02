@@ -8,5 +8,8 @@
   "repo_fixture": "request_timeout_repo",
   "task": "实现 RequestOptions 的可选 timeout：未提供时使用 DEFAULT_TIMEOUT，提供时仅允许 1 到 MAX_TIMEOUT，并让 create_client() 把最终值传给 ApiClient。保持 create_client() 无参数调用兼容。不要修改测试文件。",
   "verification_target": "tests/test_service.py",
+  "retrieval_queries": [
+    {"query": "validated request timeout options passed into API client", "relevant_files": ["schemas.py", "config.py", "service.py", "client.py"]}
+  ],
   "timeout_seconds": 120
 }

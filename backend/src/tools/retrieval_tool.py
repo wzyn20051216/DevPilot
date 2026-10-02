@@ -8,7 +8,7 @@ registry.py 只负责工具注册和分发，真正的索引构建、索引加�
 from pathlib import Path
 from typing import Any
 
-from ..rag.code_index import CodeIndex
+from ..rag.code_index import CodeIndex, StaleIndexError
 
 
 def build_code_index(
@@ -60,7 +60,7 @@ def retrieve_code(
 
     try:
         index.load()
-    except FileNotFoundError:
+    except (FileNotFoundError, StaleIndexError):
         index.build()
 
     return index.hybrid_search(

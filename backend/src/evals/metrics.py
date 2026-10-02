@@ -30,5 +30,8 @@ def summarize_results(results: list[EvaluationResult]) -> dict[str, MetricValues
             "avg_repair_rounds": mean(item.repair_rounds for item in items),
             "avg_elapsed_seconds": mean(item.elapsed_seconds for item in items),
             "avg_total_tokens": mean(item.total_tokens for item in items),
+            "avg_llm_seconds": mean(item.llm_seconds for item in items),
+            "avg_tool_seconds": mean(item.tool_seconds for item in items),
+            "avg_estimated_cost": mean(item.estimated_cost for item in items),
         }
     return summary

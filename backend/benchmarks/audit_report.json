@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-25T02:31:46.324771+00:00",
-  "dataset_sha256": "a7ab1c278d66c5f1d7dfba8df44426ca0f208827bf9545e1d41b957cf18a2254",
+  "generated_at": "2026-10-02T14:28:19.037885+00:00",
+  "dataset_sha256": "108aef233a9fa27380aca636df5d214c978499d8c7ce3ada030c09c252a709d6",
   "case_count": 9,
   "difficulty_counts": {
     "easy": 3,
@@ -26,7 +26,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 0.579305
+      "elapsed_seconds": 0.663135
     },
     {
       "case_id": "cache_expiration",
@@ -36,7 +36,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 0.605747
+      "elapsed_seconds": 0.706884
     },
     {
       "case_id": "config_timeout",
@@ -46,7 +46,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 0.566081
+      "elapsed_seconds": 0.73846
     },
     {
       "case_id": "email_normalization",
@@ -56,7 +56,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 0.590096
+      "elapsed_seconds": 0.620021
     },
     {
       "case_id": "inventory_removal",
@@ -66,7 +66,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 0.592679
+      "elapsed_seconds": 0.727299
     },
     {
       "case_id": "order_total",
@@ -76,7 +76,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 0.603676
+      "elapsed_seconds": 0.673965
     },
     {
       "case_id": "pagination_options",
@@ -86,7 +86,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 0.578477
+      "elapsed_seconds": 0.597756
     },
     {
       "case_id": "request_timeout",
@@ -96,7 +96,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 0.574696
+      "elapsed_seconds": 0.630356
     },
     {
       "case_id": "role_permissions",
@@ -106,7 +106,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 0.60648
+      "elapsed_seconds": 0.606814
     }
   ]
 }

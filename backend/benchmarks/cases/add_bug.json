@@ -8,5 +8,8 @@
   "repo_fixture": "add_bug_repo",
   "task": "修复 calculator.py 中 add 函数的实现，使现有测试通过。不要修改测试文件。",
   "verification_target": "tests/test_calculator.py",
+  "retrieval_queries": [
+    {"query": "where is the add function arithmetic implementation", "relevant_files": ["calculator.py"]}
+  ],
   "timeout_seconds": 120
 }

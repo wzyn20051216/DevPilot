@@ -8,5 +8,8 @@
   "repo_fixture": "config_timeout_repo",
   "task": "修复 service.py 的超时配置，使 build_client() 使用 config.py 中的 DEFAULT_TIMEOUT。不要修改测试文件。",
   "verification_target": "tests/test_service.py",
+  "retrieval_queries": [
+    {"query": "build client using the configured default timeout", "relevant_files": ["service.py", "config.py"]}
+  ],
   "timeout_seconds": 120
 }

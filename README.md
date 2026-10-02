@@ -6,13 +6,13 @@ DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。�
 
 ## Features
 
-- Planner / Coder / Tester / Reviewer 多智能体协作
+- 单 Agent 默认执行，以及 Planner / Coder / Tester / Reviewer 多智能体对照模式
 - 本地任务与 GitHub Issue 双入口
 - 计划审批和 GitHub 发布二次确认
 - Hybrid Code RAG、AST 分块、BM25 与向量检索
 - MCP Repository / GitHub 工具发现与调用
 - Docker 隔离测试、角色工具权限和路径边界校验
-- SSE 实时 Agent Trace 与 SQLite 历史回放
+- 后台执行、协作式取消、重启恢复、SSE 断线续传与 SQLite Trace
 - 彩色 Diff、测试报告、Review 结论和 Draft PR Preview
 - 四种 Agent 架构的 Benchmark、Ablation 和 Evaluation Dashboard
 
@@ -74,12 +74,20 @@ flowchart LR
 
 当前数据集包含 9 个可执行 case，easy / medium / hard 各 3 个。提交前的自动审计会确认每个 fixture 文件完整且初始 verifier 必须失败，审计结果见 [`backend/benchmarks/audit_report.json`](backend/benchmarks/audit_report.json)。
 
+项目还提供 3 个 SWE-bench Lite dev 真实缺陷的受控评测，以及文件级 RAG 检索评测。真实评测使用官方实例镜像、固定 base commit、基线/金补丁校准，并排除候选测试改动。当前实测结论与限制见 [`docs/current-evaluation.md`](docs/current-evaluation.md)。
+
 ```powershell
 # 不调用 LLM：审计数据集结构和初始失败状态
 uv run python -m backend.src.evals.audit
 
+# 不调用 LLM：评测文件级 RAG 的 Recall@5、MRR 与延迟
+uv run python -m backend.src.evals.retrieval --top-k 5
+
 # 调用已配置的 LLM：四组架构各重复 3 次，共 108 次 Agent 任务
 uv run python -m backend.src.evals.runner --full --repeats 3
+
+# 调用 LLM 和 Docker：运行小规模 SWE-bench Lite 真实缺陷评测
+uv run python -m backend.src.evals.real_world
 ```
 
 正式实验会把 `repeat_index`、模型、参数、数据集 SHA-256、Python 版本和运行平台写入配置快照。原始结果进入 SQLite，并可导出 CSV 后再做配对统计；不要把单次 pilot 结果当成最终性能结论。
@@ -140,6 +148,10 @@ docker compose up --build
 | `LLM_MODEL` | 模型名称 | empty |
 | `LLM_TIMEOUT_SECONDS` | 单次 LLM 请求超时秒数 | `60` |
 | `LLM_MAX_RETRIES` | LLM 瞬时故障最大重试次数 | `2` |
+| `AGENT_TOKEN_BUDGET` | 单 Agent 累计 Token 上限；`0` 表示不限制 | `0` |
+| `TOOL_OBSERVATION_MAX_CHARS` | 进入模型上下文的单次工具观测字符上限 | `16000` |
+| `LLM_PROMPT_COST_PER_MILLION` | 每百万输入 Token 成本，仅用于评测估算 | `0` |
+| `LLM_COMPLETION_COST_PER_MILLION` | 每百万输出 Token 成本，仅用于评测估算 | `0` |
 | `MCP_TIMEOUT_SECONDS` | Repository MCP 调用超时秒数 | `30` |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | GitHub MCP 凭据 | empty |
 | `DATABASE_PATH` | SQLite 文件路径 | `backend/data/devpilot.db` |
@@ -157,7 +169,11 @@ docker compose up --build
 | `GET` | `/readyz` | SQLite 与 Docker 能力检查 |
 | `POST` | `/api/tasks/plan` | 生成待审批计划 |
 | `POST` | `/api/tasks/{id}/execute` | SSE 执行任务 |
-| `GET` | `/api/tasks/{id}` | 恢复任务、事件和 Tool Calls |
+| `GET` | `/api/tasks/{id}/events?after_sequence=N` | SSE 断线续传 |
+| `POST` | `/api/tasks/{id}/cancel` | 协作式取消后台任务 |
+| `POST` | `/api/tasks/{id}/resume` | 恢复服务重启时中断的任务 |
+| `GET` | `/api/tasks/{id}` | 查询任务、事件和 Tool Calls |
+| `GET` | `/api/tasks/{id}/metrics` | 查询 Token、成本与模型/工具耗时 |
 | `GET` | `/api/tasks/{id}/diff` | 读取当前 Git Diff |
 | `POST` | `/api/github/issues/import` | 从 GitHub Issue 创建任务 |
 | `POST` | `/api/tasks/{id}/publish-preview` | 创建只读发布预览 |

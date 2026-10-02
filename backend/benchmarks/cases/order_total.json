@@ -8,5 +8,8 @@
   "repo_fixture": "order_total_repo",
   "task": "修复订单总价计算：逐项使用 pricing.discounted_subtotal，汇总后按两位小数返回 Decimal；折扣必须位于 0 到 1 之间。不要修改测试文件。",
   "verification_target": "tests/test_order_service.py",
+  "retrieval_queries": [
+    {"query": "calculate order total with discounts and decimal rounding", "relevant_files": ["order_service.py", "pricing.py"]}
+  ],
   "timeout_seconds": 120
 }

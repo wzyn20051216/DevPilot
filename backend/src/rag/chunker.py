@@ -10,6 +10,7 @@
 
 import ast
 import hashlib
+from collections.abc import Iterator
 from pathlib import Path
 
 from ..rag.models import CodeChunk
@@ -223,6 +224,51 @@ IGNORED_FILES = {
     ".env.production",
 }
 
+def iter_indexable_files(repo_path: str | Path) -> Iterator[Path]:
+    """! @brief 按稳定顺序枚举会进入代码索引的源码文件。
+
+    该函数同时供分块器和索引指纹计算使用，避免两处过滤规则漂移。
+
+    @param repo_path 仓库根目录。
+    @return 按相对路径排序的可索引文件迭代器。
+    """
+
+    repo = Path(repo_path).resolve()
+    candidates = (
+        path
+        for path in repo.rglob("*")
+        if path.is_file()
+        and not any(part in IGNORED_DIRS for part in path.parts)
+        and path.name not in IGNORED_FILES
+        and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    )
+    yield from sorted(candidates, key=lambda path: path.relative_to(repo).as_posix())
+
+
+def calculate_source_fingerprint(repo_path: str | Path) -> str:
+    """! @brief 计算当前可索引源码的内容指纹。
+
+    路径、文件长度和内容都会进入 SHA-256；任何新增、删除或修改都会使旧索引
+    失效，防止 Agent 在写文件后继续读取过期代码。
+
+    @param repo_path 仓库根目录。
+    @return 64 位十六进制 SHA-256。
+    """
+
+    repo = Path(repo_path).resolve()
+    digest = hashlib.sha256()
+    for path in iter_indexable_files(repo):
+        relative = path.relative_to(repo).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(str(len(content)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(content)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def chunk_repository(repo_path:str)->list[CodeChunk]:
     """! @brief 遍历仓库并把可支持的源码文件汇总为代码块。
 
@@ -231,17 +277,7 @@ def chunk_repository(repo_path:str)->list[CodeChunk]:
     """
     repo=Path(repo_path).resolve()
     chunks:list[CodeChunk]=[]
-    for path in repo.rglob("*"):
-        if not path.is_file():
-            continue
-        # path.parts 包含完整目录层级；任一级命中忽略目录都跳过，避免把
-        # .git、虚拟环境、构建产物及旧索引再次送进 embedding 模型。
-        if any(part in IGNORED_DIRS for part in path.parts):
-            continue
-        if path.name in IGNORED_FILES:
-            continue
-        if (path.suffix.lower() not in SUPPORTED_EXTENSIONS):
-            continue
+    for path in iter_indexable_files(repo):
         try:
             if (path.suffix.lower()==".py"):
                 file_chunks=(chunk_python_file(repo,path))

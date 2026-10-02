@@ -8,5 +8,8 @@
   "repo_fixture": "cache_expiration_repo",
   "task": "实现 Cache 的 TTL 过期：默认使用 config.DEFAULT_TTL，允许构造时注入 clock，get() 在 now >= expires_at 时删除并返回 None，同时保持 Cache() 无参数调用兼容。不要修改测试文件。",
   "verification_target": "tests/test_cache.py",
+  "retrieval_queries": [
+    {"query": "cache expiration TTL and injectable clock", "relevant_files": ["cache.py", "config.py"]}
+  ],
   "timeout_seconds": 120
 }

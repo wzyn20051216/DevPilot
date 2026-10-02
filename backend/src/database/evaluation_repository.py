@@ -18,9 +18,10 @@ class EvaluationRepository:
                     tests_passed, tool_calls,
                     iterations, repair_rounds, elapsed_seconds,
                     prompt_tokens, completion_tokens, total_tokens,
+                    llm_seconds, tool_seconds, estimated_cost,
                     workspace_path, error, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.run_id,
@@ -36,6 +37,9 @@ class EvaluationRepository:
                     result.prompt_tokens,
                     result.completion_tokens,
                     result.total_tokens,
+                    result.llm_seconds,
+                    result.tool_seconds,
+                    result.estimated_cost,
                     result.workspace_path,
                     result.error,
                     result.created_at.isoformat(),

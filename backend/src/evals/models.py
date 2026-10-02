@@ -27,6 +27,13 @@ BenchmarkCategory = Literal[
 ]
 
 
+class RetrievalQuery(BaseModel):
+    """! @brief 一条带文件级相关性标注的代码检索查询。"""
+
+    query: str = Field(min_length=1)
+    relevant_files: list[str] = Field(min_length=1)
+
+
 class BenchmarkCase(BaseModel):
     """! @brief 一条可重复执行的基准测试用例。"""
 
@@ -46,6 +53,10 @@ class BenchmarkCase(BaseModel):
         description="独立验证时传给 pytest 的目标路径",
     )
     timeout_seconds: int = Field(default=120, gt=0, description="独立验证超时秒数")
+    retrieval_queries: list[RetrievalQuery] = Field(
+        default_factory=list,
+        description="用于 Recall@K/MRR 的代码检索标注",
+    )
 
 
 class EvaluationResult(BaseModel):
@@ -64,6 +75,9 @@ class EvaluationResult(BaseModel):
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    llm_seconds: float = Field(default=0.0, ge=0)
+    tool_seconds: float = Field(default=0.0, ge=0)
+    estimated_cost: float = Field(default=0.0, ge=0)
     workspace_path: str
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

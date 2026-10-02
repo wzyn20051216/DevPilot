@@ -14,6 +14,7 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 
 from ..rag.chunker import (
+    calculate_source_fingerprint,
     chunk_repository,
 )
 from ..rag.embedder import (
@@ -24,6 +25,11 @@ from ..rag.models import (
     CodeChunk,
 )
 INDEX_DIR_NAME = ".devpilot"
+INDEX_FORMAT_VERSION = 1
+
+
+class StaleIndexError(RuntimeError):
+    """持久化索引与当前源码不一致。"""
 
 class CodeIndex:
     """! @brief 面向单个仓库的代码索引管理器。
@@ -59,6 +65,8 @@ class CodeIndex:
             self.index_dir
             / "vectors.npy"
         )
+
+        self.manifest_path = self.index_dir / "manifest.json"
 
         self.chunks: list[
             CodeChunk
@@ -119,6 +127,20 @@ class CodeIndex:
             vectors,
         )
 
+        self.manifest_path.write_text(
+            json.dumps(
+                {
+                    "format_version": INDEX_FORMAT_VERSION,
+                    "source_sha256": calculate_source_fingerprint(self.repo),
+                    "chunks": len(chunks),
+                    "dimensions": int(vectors.shape[1]),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
         self.chunks = chunks
         self.vectors = vectors
 
@@ -141,10 +163,19 @@ class CodeIndex:
         if (
             not self.chunks_path.exists()
             or not self.vectors_path.exists()
+            or not self.manifest_path.exists()
         ):
             raise FileNotFoundError(
                 "代码索引不存在，请先 build"
             )
+
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        current_fingerprint = calculate_source_fingerprint(self.repo)
+        if (
+            manifest.get("format_version") != INDEX_FORMAT_VERSION
+            or manifest.get("source_sha256") != current_fingerprint
+        ):
+            raise StaleIndexError("代码索引已过期，请重新 build")
 
         raw_chunks = json.loads(
             self.chunks_path.read_text(
@@ -162,6 +193,9 @@ class CodeIndex:
         self.vectors = np.load(
             self.vectors_path
         )
+
+        if len(self.chunks) != int(self.vectors.shape[0]):
+            raise StaleIndexError("代码索引元数据与向量数量不一致")
     def vector_search(
         self,
         query: str,
@@ -352,22 +386,28 @@ class CodeIndex:
                 + 1.0 / (k + rank)
             )
 
-        # scores.items() 形如 (chunk_index, rrf_score)，按融合分数降序截断。
+        # scores.items() 形如 (chunk_index, rrf_score)，先按融合分数降序。
+        # Agent 后续可以 read_file 查看完整内容，因此最终结果每个文件只保留
+        # 最高分 chunk，避免同一测试文件的多个片段挤掉其它相关模块。
         ranked = sorted(
             scores.items(),
             key=lambda item: item[1],
             reverse=True,
-        )[:top_k]
+        )
 
         results: list[
             dict[str, object]
         ] = []
 
+        selected_files: set[str] = set()
         for index, score in ranked:
 
             chunk = self.chunks[
                 index
             ]
+            if chunk.file_path in selected_files:
+                continue
+            selected_files.add(chunk.file_path)
 
             results.append({
                 "file_path": (
@@ -387,5 +427,7 @@ class CodeIndex:
                     chunk.content
                 ),
             })
+            if len(results) >= top_k:
+                break
 
         return results

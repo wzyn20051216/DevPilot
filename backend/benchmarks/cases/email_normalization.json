@@ -8,5 +8,8 @@
   "repo_fixture": "email_normalization_repo",
   "task": "修复 user_utils.py 的 normalize_email：去除首尾空白、转为小写，并对不包含 @ 的输入抛出 ValueError。不要修改测试文件。",
   "verification_target": "tests/test_user_utils.py",
+  "retrieval_queries": [
+    {"query": "normalize and validate a user email address", "relevant_files": ["user_utils.py"]}
+  ],
   "timeout_seconds": 120
 }
