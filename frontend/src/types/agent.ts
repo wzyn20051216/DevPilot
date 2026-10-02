@@ -11,6 +11,7 @@ export type AgentEventType =
   | 'review'
   | 'final'
   | 'error'
+  | 'cancelled'
 
 export type TaskStatus =
   | 'idle'
@@ -18,9 +19,11 @@ export type TaskStatus =
   | 'awaiting_approval'
   | 'approved'
   | 'running'
+  | 'cancelling'
   | 'completed'
   | 'failed'
   | 'cancelled'
+  | 'interrupted'
 
 export interface AgentEvent {
   type: AgentEventType
@@ -28,6 +31,8 @@ export interface AgentEvent {
   iteration: number
   message: string
   data: Record<string, unknown>
+  sequence?: number
+  created_at?: string
 }
 
 export interface PersistedAgentEvent extends AgentEvent {
@@ -53,6 +58,7 @@ export interface DevelopmentTask {
   repo_path: string
   question: string
   status: Exclude<TaskStatus, 'idle' | 'planning'>
+  execution_mode: 'single_no_rag' | 'single_rag' | 'multi_no_rag' | 'multi_rag'
   plan: PlanStep[]
 }
 
@@ -62,6 +68,8 @@ export interface ToolCallRecord {
   tool: string
   arguments: Record<string, unknown>
   result_preview: string
+  duration_seconds: number
+  succeeded: boolean
   created_at: string
 }
 
@@ -90,6 +98,7 @@ export interface GitHubIssueImportRequest {
   repo: string
   issue_number: number
   local_repo_path: string
+  execution_mode?: 'single_no_rag' | 'single_rag' | 'multi_no_rag' | 'multi_rag'
 }
 
 export interface GitHubIssueImportResponse extends TaskPlanResponse {

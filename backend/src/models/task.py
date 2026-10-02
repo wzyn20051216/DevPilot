@@ -19,12 +19,23 @@ TaskStatus = Literal[
     "approved",
     # 用户触发 execute 后，任务进入实际执行阶段。
     "running",
+    # 已请求取消，正在等待当前 LLM/工具调用到达可中断点。
+    "cancelling",
     # Coder / Tester / Reviewer 流程全部正常结束。
     "completed",
     # 执行过程中出现 error 事件或异常。
     "failed",
     # 预留状态：后续支持取消任务时使用。
     "cancelled",
+    # 服务重启时发现任务仍在运行；可由用户显式恢复。
+    "interrupted",
+]
+
+ExecutionMode = Literal[
+    "single_no_rag",
+    "single_rag",
+    "multi_no_rag",
+    "multi_rag",
 ]
 
 
@@ -51,6 +62,8 @@ class DevelopmentTask(BaseModel):
     status: TaskStatus = (
         "awaiting_approval"
     )
+
+    execution_mode: ExecutionMode = "single_no_rag"
 
     plan: list[PlanStep] = Field(
         default_factory=list,

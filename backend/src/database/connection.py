@@ -66,6 +66,7 @@ def init_database() -> None:
                 repo_path TEXT NOT NULL,
                 question TEXT NOT NULL,
                 status TEXT NOT NULL,
+                execution_mode TEXT NOT NULL DEFAULT 'single_no_rag',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -105,6 +106,8 @@ def init_database() -> None:
                 tool TEXT NOT NULL,
                 arguments_json TEXT NOT NULL,
                 result_preview TEXT NOT NULL,
+                duration_seconds REAL NOT NULL DEFAULT 0,
+                succeeded INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(task_id)
                     REFERENCES tasks(id)
@@ -161,6 +164,9 @@ def init_database() -> None:
                 prompt_tokens INTEGER NOT NULL,
                 completion_tokens INTEGER NOT NULL,
                 total_tokens INTEGER NOT NULL,
+                llm_seconds REAL NOT NULL DEFAULT 0,
+                tool_seconds REAL NOT NULL DEFAULT 0,
+                estimated_cost REAL NOT NULL DEFAULT 0,
                 workspace_path TEXT NOT NULL,
                 error TEXT,
                 created_at TEXT NOT NULL
@@ -168,6 +174,9 @@ def init_database() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_evaluation_results_run_id
             ON evaluation_results(run_id);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_events_task_sequence
+            ON agent_events(task_id, sequence);
             """
         )
 
@@ -200,4 +209,29 @@ def init_database() -> None:
                 ALTER TABLE evaluation_results
                 ADD COLUMN repeat_index INTEGER NOT NULL DEFAULT 1
                 """
+            )
+        for column in ("llm_seconds", "tool_seconds", "estimated_cost"):
+            if column not in evaluation_columns:
+                conn.execute(
+                    f"ALTER TABLE evaluation_results ADD COLUMN {column} REAL NOT NULL DEFAULT 0"
+                )
+        tool_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(tool_calls)").fetchall()
+        }
+        if "duration_seconds" not in tool_columns:
+            conn.execute(
+                "ALTER TABLE tool_calls ADD COLUMN duration_seconds REAL NOT NULL DEFAULT 0"
+            )
+        if "succeeded" not in tool_columns:
+            conn.execute(
+                "ALTER TABLE tool_calls ADD COLUMN succeeded INTEGER NOT NULL DEFAULT 1"
+            )
+        task_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "execution_mode" not in task_columns:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'single_no_rag'"
             )

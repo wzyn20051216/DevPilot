@@ -11,6 +11,7 @@ import { api } from './client'
 export interface CreatePlanRequest {
   repo_path: string
   question: string
+  execution_mode?: 'single_no_rag' | 'single_rag' | 'multi_no_rag' | 'multi_rag'
 }
 
 /** @brief 请求后端生成计划，但不执行任何代码修改。 */
@@ -22,6 +23,20 @@ export async function createPlan(request: CreatePlanRequest): Promise<TaskPlanRe
 /** @brief 读取任务主体、持久化事件和工具调用记录。 */
 export async function getTask(taskId: string): Promise<TaskDetailResponse> {
   const response = await api.get<TaskDetailResponse>(`/api/tasks/${taskId}`)
+  return response.data
+}
+
+/** @brief 请求取消正在后台执行的任务。 */
+export async function cancelTask(taskId: string): Promise<{ task_id: string; status: string }> {
+  const response = await api.post<{ task_id: string; status: string }>(
+    `/api/tasks/${taskId}/cancel`,
+  )
+  return response.data
+}
+
+/** @brief 读取任务级 Token、成本和耗时指标。 */
+export async function getTaskMetrics(taskId: string): Promise<Record<string, unknown>> {
+  const response = await api.get<Record<string, unknown>>(`/api/tasks/${taskId}/metrics`)
   return response.data
 }
 

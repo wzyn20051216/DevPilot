@@ -10,6 +10,7 @@ import {
   LoaderCircle,
   Play,
   RotateCcw,
+  Square,
   Sparkles,
   Terminal,
 } from '@lucide/vue'
@@ -19,8 +20,8 @@ import AgentPipeline from '../components/AgentPipeline.vue'
 import ApprovalDialog from '../components/ApprovalDialog.vue'
 import TaskResults from '../components/TaskResults.vue'
 import { getErrorMessage } from '../api/client'
-import { streamTask } from '../api/stream'
-import { createPlan, importGitHubIssue } from '../api/tasks'
+import { reconnectTaskStream, streamTask } from '../api/stream'
+import { cancelTask, createPlan, getTask, importGitHubIssue } from '../api/tasks'
 import { useTaskStore } from '../stores/task'
 import type { TaskPlanResponse } from '../types/agent'
 
@@ -30,6 +31,9 @@ const repoPath = ref(
   import.meta.env.VITE_DEFAULT_REPO_PATH ?? 'E:\\desktop\\devpilot-test-repo',
 )
 const question = ref('修复 add 函数中的 bug 并运行测试。')
+const executionMode = ref<'single_no_rag' | 'single_rag' | 'multi_no_rag' | 'multi_rag'>(
+  'single_no_rag',
+)
 const githubOwner = ref('')
 const githubRepo = ref('devpilot-test-repo')
 const issueNumber = ref(1)
@@ -57,6 +61,7 @@ async function handlePlan() {
       result = await createPlan({
         repo_path: repoPath.value.trim(),
         question: question.value.trim(),
+        execution_mode: executionMode.value,
       })
     } else {
       const imported = await importGitHubIssue({
@@ -64,6 +69,7 @@ async function handlePlan() {
           repo: githubRepo.value.trim(),
           issue_number: issueNumber.value,
           local_repo_path: repoPath.value.trim(),
+          execution_mode: executionMode.value,
         })
 
       issueUrl.value = imported.issue_url
@@ -100,22 +106,52 @@ async function handleApprove() {
   store.status = 'running'
   store.error = ''
   try {
-    await streamTask(
-      store.taskId,
-      async (event) => {
-        store.addEvent(event)
-        await nextTick()
-        traceElement.value?.scrollTo({ top: traceElement.value.scrollHeight, behavior: 'smooth' })
-      },
-    )
-    if (!store.hasExecutionError) {
-      store.status = 'completed'
+    let firstConnection = true
+    let reconnects = 0
+    const onEvent = async (event: Parameters<typeof store.addEvent>[0]) => {
+      store.addEvent(event)
+      await nextTick()
+      traceElement.value?.scrollTo({ top: traceElement.value.scrollHeight, behavior: 'smooth' })
     }
+    while (true) {
+      try {
+        const lastSequence = store.events.at(-1)?.sequence ?? 0
+        if (firstConnection) {
+          firstConnection = false
+          await streamTask(store.taskId, onEvent)
+        } else {
+          await reconnectTaskStream(store.taskId, lastSequence, onEvent)
+        }
+        break
+      } catch (error) {
+        const detail = await getTask(store.taskId)
+        store.status = detail.task.status
+        if (!['running', 'cancelling'].includes(detail.task.status) || reconnects >= 3) {
+          throw error
+        }
+        reconnects += 1
+        store.events = detail.events
+        await new Promise((resolve) => window.setTimeout(resolve, 500))
+      }
+    }
+    const detail = await getTask(store.taskId)
+    store.status = detail.task.status
   } catch (error) {
     store.error = getErrorMessage(error)
     store.status = 'failed'
   } finally {
     store.running = false
+  }
+}
+
+/** @brief 请求后台任务在下一个安全点停止。 */
+async function handleCancel() {
+  if (!store.taskId || store.status !== 'running') return
+  try {
+    await cancelTask(store.taskId)
+    store.status = 'cancelling'
+  } catch (error) {
+    store.error = getErrorMessage(error)
   }
 }
 
@@ -160,6 +196,14 @@ function eventLabel(type: string) {
             <Terminal :size="15" />
             <input id="repo-path" v-model="repoPath" autocomplete="off" spellcheck="false" />
           </div>
+
+          <label for="execution-mode">Execution strategy</label>
+          <select id="execution-mode" v-model="executionMode">
+            <option value="single_no_rag">Single Agent · no RAG (default)</option>
+            <option value="single_rag">Single Agent · Hybrid RAG</option>
+            <option value="multi_no_rag">Multi Agent · no RAG</option>
+            <option value="multi_rag">Multi Agent · Hybrid RAG</option>
+          </select>
 
           <template v-if="inputMode === 'local'">
             <label for="question">Development Task</label>
@@ -234,6 +278,14 @@ function eventLabel(type: string) {
           <Terminal :size="17" />
           <h2 id="trace-title">Agent Trace</h2>
           <span class="live-indicator" :class="{ active: store.running }"></span>
+          <button
+            v-if="store.status === 'running'"
+            class="danger-button"
+            type="button"
+            @click="handleCancel"
+          >
+            <Square :size="13" fill="currentColor" /> Cancel
+          </button>
         </header>
 
         <div ref="traceElement" class="trace-stream" aria-live="polite">

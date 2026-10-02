@@ -25,8 +25,42 @@ export async function streamTask(
   onEvent: (event: AgentEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/execute`, {
-    method: 'POST',
+  return consumeTaskStream(`${API_BASE_URL}/api/tasks/${taskId}/execute`, onEvent, signal, 'POST')
+}
+
+/** @brief 从上次已接收序号恢复观察，不会重新启动任务。 */
+export async function reconnectTaskStream(
+  taskId: string,
+  afterSequence: number,
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const query = new URLSearchParams({ after_sequence: String(afterSequence) })
+  return consumeTaskStream(
+    `${API_BASE_URL}/api/tasks/${taskId}/events?${query.toString()}`,
+    onEvent,
+    signal,
+    'GET',
+  )
+}
+
+/** @brief 恢复被服务重启中断的任务，并从新事件开始观察。 */
+export async function resumeTaskStream(
+  taskId: string,
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return consumeTaskStream(`${API_BASE_URL}/api/tasks/${taskId}/resume`, onEvent, signal, 'POST')
+}
+
+async function consumeTaskStream(
+  url: string,
+  onEvent: (event: AgentEvent) => void,
+  signal: AbortSignal | undefined,
+  method: 'GET' | 'POST',
+): Promise<void> {
+  const response = await fetch(url, {
+    method,
     headers: { Accept: 'text/event-stream' },
     signal,
   })

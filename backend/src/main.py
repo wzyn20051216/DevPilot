@@ -1,6 +1,7 @@
 import json
 import shutil
 import subprocess
+import time
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from typing import cast
@@ -42,7 +43,38 @@ from .services.github_issue_service import (
 )
 from .services.publish_service import publish_service
 from .services.evaluation_service import evaluation_service
+from .services.task_execution_service import (
+    SingleAgentTaskRunner,
+    TaskExecutionService,
+    encode_sse_event,
+)
+from .services.trace_service import trace_service
 from .tools.git_tool import git_diff
+
+
+def _create_task_runner(task, cancel_check):
+    """! @brief 按任务持久化的执行策略构造实际运行器。"""
+
+    enable_rag = task.execution_mode in {"single_rag", "multi_rag"}
+    if task.execution_mode.startswith("single_"):
+        return SingleAgentTaskRunner(
+            repo_path=task.repo_path,
+            enable_rag=enable_rag,
+            cancel_check=cancel_check,
+        )
+    return DevPilotOrchestrator(
+        repo_path=task.repo_path,
+        enable_rag=enable_rag,
+        cancel_check=cancel_check,
+    )
+
+
+task_execution_service = TaskExecutionService(
+    repository=task_repository,
+    orchestrator_factory=_create_task_runner,
+)
+
+TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
 
 
 @asynccontextmanager
@@ -51,6 +83,9 @@ async def lifespan(_app: FastAPI):
 
     configure_logging()
     init_database()
+    interrupted = task_repository.mark_incomplete_as_interrupted()
+    if interrupted:
+        logger.warning("Marked {} unfinished tasks as interrupted", interrupted)
     logger.info(
         "{} API started in {} mode",
         settings.app_name,
@@ -346,139 +381,111 @@ def create_task_plan(request:AgentRunRequest)->TaskPlanResponse:
     @return 任务 ID、awaiting_approval 状态和计划步骤。
     """
 
-    orchestrator =DevPilotOrchestrator(repo_path=request.repo_path)
+    orchestrator = DevPilotOrchestrator(
+        repo_path=request.repo_path,
+        enable_rag=request.execution_mode in {"single_rag", "multi_rag"},
+    )
     plan=orchestrator.plan(request.question)
     task = task_repository.create_task(
         repo_path=request.repo_path,
         question=request.question,
         plan=plan,
+        execution_mode=request.execution_mode,
     )
 
     return TaskPlanResponse(task_id=task.id,plan=task.plan,status=task.status)
 
 @app.post("/api/tasks/{task_id}/execute")
 def execute_task(task_id: str) -> StreamingResponse:
-    """执行已批准的任务（从 task_repository 取出计划，跑 execute_stream）。
+    """! @brief 原子领取任务、后台执行，并流式观察持久化事件。"""
 
-    与 `/api/tasks/plan` 配合实现「先看计划 → 用户批准 → 再执行」的两段式流程。
-    只有状态为 `awaiting_approval` 的任务才能执行，避免重复触发。
-
-    Args:
-        task_id: URL 路径参数，任务唯一标识（由 `/api/tasks/plan` 返回）。
-            FastAPI 会自动把 URL 里 `/api/tasks/{task_id}/execute` 的那段
-            解析成 `task_id` 形参并注入，无需在装饰器里 f-string 引用。
-
-    Returns:
-        SSE 流式响应（text/event-stream），实时推送 Coder/Tester/Reviewer 阶段事件。
-
-    Raises:
-        HTTPException: 任务不存在 (404) 或状态不允许执行 (409) 时抛出。
-    """
-    # 1. 取出任务 + 校验状态。
     try:
         task = task_repository.get_task(task_id)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    # Approval Gate：只有用户看过计划后，手动调用 execute 的任务才允许继续。
-    # 当前版本把「调用 execute」本身视作人工批准动作，所以这里检查
-    # awaiting_approval，而不是另外要求 approved 状态。
-    if task.status != "awaiting_approval":
+    if not task_repository.claim_status(
+        task_id,
+        {"awaiting_approval"},
+        "running",
+    ):
+        current = task_repository.get_task(task_id)
         raise InvalidTaskStateError(
-            f"当前任务状态无法执行：{task.status}",
+            f"当前任务状态无法执行：{current.status}",
         )
+    try:
+        task_execution_service.start(task_id)
+    except Exception:
+        task_repository.claim_status(task_id, {"running"}, "failed")
+        raise
 
-    orchestrator = DevPilotOrchestrator(repo_path=task.repo_path)
+    return _task_event_stream(task_id, after_sequence=0)
+
+
+def _task_event_stream(task_id: str, after_sequence: int) -> StreamingResponse:
+    """! @brief 从 SQLite 追踪新增事件，客户端断线不影响后台执行。"""
 
     def event_generator() -> Iterator[str]:
-        """把 orchestrator 的执行过程转成 SSE 事件流推给前端。
-
-        流程：
-        1. 逐条消费 `execute_stream(question, plan)` 产出的事件，序列化为
-           `"data: {json}\\n\\n"` 的 SSE 字符串（前端 EventSource 逐条接收）；
-        2. 整条流水线正常跑完 → 把任务置为 completed；
-        3. 任何环节抛异常 → 把任务置为 failed，并额外推一条 error 事件
-           （type=error）给前端，避免连接中断后前端一片空白。
-
-        Yields:
-            str: 每条 SSE 消息字符串（不含 SSE 的结束分隔符之外的额外内容）。
-        """
-        sequence = 0
-        # 一旦 SSE 生成器开始消费，说明任务正式进入 Coder/Tester/Reviewer 流程。
-        task_repository.set_status(
-            task_id,
-            "running",
-        )
-        try:
-            saw_error = False
-            for event in orchestrator.execute_stream(
-                question=task.question,
-                plan=task.plan,
-            ):
-                # sequence 是“单个任务内”的严格递增序号。数据库查询按它排序，
-                # 因此即使多个事件发生在同一秒，也能还原真实执行先后顺序。
-                sequence += 1
-                if event.type == "error":
-                    saw_error = True
-                task_repository.add_event(
-                    task_id=task_id,
-                    sequence=sequence,
-                    event=event,
-                )
-                # tool_result 已由 BaseToolAgent 带上工具名、原始参数和结果摘要。
-                # 在这里集中落库，Agent 本身无需知道 SQLite 的存在。
-                if event.type == "tool_result":
-                    tool = event.data.get(
-                        "tool",
-                    )
-                    arguments = event.data.get(
-                        "arguments",
-                        {},
-                    )
-                    result_preview = event.data.get(
-                        "result_preview",
-                        "",
-                    )
-                    if isinstance(tool, str) and isinstance(arguments, dict):
-                        task_repository.add_tool_call(
-                            task_id=task_id,
-                            agent=event.agent,
-                            iteration=event.iteration,
-                            tool=tool,
-                            arguments=arguments,
-                            result_preview=str(result_preview),
-                        )
-                # mode="json" 会把 Pydantic 中可能存在的日期、枚举等值转换为
-                # JSON 兼容类型；随后再包装成 SSE 要求的 data: ...\n\n 格式。
-                event_data = event.model_dump(mode="json")
-                yield "data: " + json.dumps(event_data, ensure_ascii=False) + "\n\n"
-            # 整条流水线跑完后，根据是否出现 error 事件设置最终状态。
-            task_repository.set_status(
-                task_id,
-                "failed" if saw_error else "completed",
-            )
-        except Exception as exc:
-            # 任何异常都把任务置为 failed，并通过 SSE 推一条 error 事件给前端。
-            task_repository.set_status(task_id, "failed")
-            sequence += 1
-            error_event = AgentEvent(
-                type="error",
-                agent="orchestrator",
-                message=str(exc),
-            )
-            task_repository.add_event(
-                task_id=task_id,
-                sequence=sequence,
-                event=error_event,
-            )
-            yield "data: " + error_event.model_dump_json() + "\n\n"
+        cursor = after_sequence
+        while True:
+            events = task_repository.get_events_after(task_id, cursor)
+            for event in events:
+                cursor = int(event["sequence"])
+                yield encode_sse_event(event)
+            status = task_repository.get_task(task_id).status
+            if status in TERMINAL_TASK_STATUSES and not events:
+                return
+            time.sleep(0.1)
 
     return StreamingResponse(
         content=event_generator(),
         media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/tasks/{task_id}/events")
+def reconnect_task_events(task_id: str, after_sequence: int = 0) -> StreamingResponse:
+    """! @brief 断线后从指定事件序号恢复 SSE。"""
+
+    _ = task_repository.get_task(task_id)
+    return _task_event_stream(task_id, after_sequence=max(0, after_sequence))
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+def cancel_task(task_id: str) -> dict[str, str]:
+    """! @brief 请求协作式取消正在执行的任务。"""
+
+    task = task_repository.get_task(task_id)
+    if task.status != "running":
+        raise InvalidTaskStateError(f"当前任务状态无法取消：{task.status}")
+    if not task_repository.claim_status(task_id, {"running"}, "cancelling"):
+        raise InvalidTaskStateError("任务状态已变化，请刷新后重试")
+    if not task_execution_service.cancel(task_id):
+        task_repository.claim_status(task_id, {"cancelling"}, "interrupted")
+        raise InvalidTaskStateError("任务不在当前进程中运行，已标记为 interrupted")
+    return {"task_id": task_id, "status": "cancelling"}
+
+
+@app.post("/api/tasks/{task_id}/resume")
+def resume_task(task_id: str) -> StreamingResponse:
+    """! @brief 从已持久化计划恢复服务重启时中断的任务。"""
+
+    _ = task_repository.get_task(task_id)
+    if not task_repository.claim_status(task_id, {"interrupted"}, "running"):
+        current = task_repository.get_task(task_id)
+        raise InvalidTaskStateError(f"当前任务状态无法恢复：{current.status}")
+    # 必须在启动线程前固定游标。否则极快的 Agent 可能先写入首条恢复事件，
+    # 随后读取的 next sequence 会把它误当成历史事件，导致当前 SSE 漏报。
+    resume_after_sequence = task_repository.next_event_sequence(task_id) - 1
+    try:
+        task_execution_service.start(task_id)
+    except Exception:
+        task_repository.claim_status(task_id, {"running"}, "interrupted")
+        raise
+    return _task_event_stream(
+        task_id,
+        after_sequence=resume_after_sequence,
     )
 
 @app.get("/api/tasks/{task_id}", response_model=TaskDetailResponse)
@@ -510,6 +517,13 @@ def get_task_detail(task_id:str)->TaskDetailResponse:
             )
         ),
     )
+
+
+@app.get("/api/tasks/{task_id}/metrics")
+def get_task_metrics(task_id: str) -> dict[str, object]:
+    """! @brief 返回任务级 Token、成本、模型耗时和工具耗时。"""
+
+    return trace_service.task_metrics(task_id)
 
 
 @app.get("/api/tasks/{task_id}/diff")
@@ -570,7 +584,8 @@ def import_github_issue(request:GitHubIssueImportRequest)->GitHubIssueImportResp
             issue
         )
         orchestrator=DevPilotOrchestrator(
-            repo_path=request.local_repo_path
+            repo_path=request.local_repo_path,
+            enable_rag=request.execution_mode in {"single_rag", "multi_rag"},
         )
         plan=orchestrator.plan(
             question=question
@@ -579,6 +594,7 @@ def import_github_issue(request:GitHubIssueImportRequest)->GitHubIssueImportResp
             repo_path=request.local_repo_path,
             question=question,
             plan=plan,
+            execution_mode=request.execution_mode,
         )
         # GitHub Issue 只作为任务来源记录保存。此处不会执行 Coder，
         # 返回给用户的是 awaiting_approval 状态和 Planner 计划。

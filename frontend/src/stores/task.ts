@@ -32,6 +32,9 @@ export const useTaskStore = defineStore('task', () => {
     if (event.type === 'error') {
       status.value = 'failed'
       error.value = event.message
+    } else if (event.type === 'cancelled') {
+      status.value = 'cancelled'
+      error.value = ''
     }
   }
 

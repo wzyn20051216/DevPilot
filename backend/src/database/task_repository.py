@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from ..exceptions import TaskNotFoundError
 from ..models.agent_state import AgentEvent, PlanStep
-from ..models.task import DevelopmentTask, TaskStatus
+from ..models.task import DevelopmentTask, ExecutionMode, TaskStatus
 from .connection import get_connection
 
 
@@ -34,6 +34,7 @@ class TaskRepository:
         repo_path: str,
         question: str,
         plan: list[PlanStep],
+        execution_mode: ExecutionMode = "single_no_rag",
     ) -> DevelopmentTask:
         """! @brief 创建任务并保存计划步骤。
 
@@ -47,6 +48,7 @@ class TaskRepository:
             repo_path=repo_path,
             question=question,
             plan=plan,
+            execution_mode=execution_mode,
         )
         now = _now_iso()
 
@@ -60,16 +62,18 @@ class TaskRepository:
                     repo_path,
                     question,
                     status,
+                    execution_mode,
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
                     task.repo_path,
                     task.question,
                     task.status,
+                    task.execution_mode,
                     now,
                     now,
                 ),
@@ -118,7 +122,8 @@ class TaskRepository:
                     id,
                     repo_path,
                     question,
-                    status
+                    status,
+                    execution_mode
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -149,6 +154,7 @@ class TaskRepository:
             repo_path=str(task_row["repo_path"]),
             question=str(task_row["question"]),
             status=task_row["status"],
+            execution_mode=task_row["execution_mode"],
             plan=[
                 PlanStep(
                     id=int(row["step_index"]),
@@ -193,6 +199,92 @@ class TaskRepository:
                 raise TaskNotFoundError(f"任务不存在: {task_id}")
 
         return self.get_task(task_id)
+
+    def claim_status(
+        self,
+        task_id: str,
+        expected: set[TaskStatus],
+        status: TaskStatus,
+    ) -> bool:
+        """! @brief 原子地按期望状态领取任务。
+
+        @param task_id 任务 ID。
+        @param expected 允许迁移的旧状态集合。
+        @param status 新状态。
+        @return 本次请求是否成功完成状态迁移。
+        """
+
+        if not expected:
+            return False
+        placeholders = ", ".join("?" for _ in expected)
+        now = _now_iso()
+        with get_connection() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE tasks
+                SET status = ?, updated_at = ?
+                WHERE id = ? AND status IN ({placeholders})
+                """,
+                (status, now, task_id, *sorted(expected)),
+            )
+            return cursor.rowcount == 1
+
+    def mark_incomplete_as_interrupted(self) -> int:
+        """! @brief 启动时把上次进程遗留的运行任务标记为中断。"""
+
+        now = _now_iso()
+        with get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'interrupted', updated_at = ?
+                WHERE status IN ('running', 'cancelling')
+                """,
+                (now,),
+            )
+            return cursor.rowcount
+
+    def next_event_sequence(self, task_id: str) -> int:
+        """! @brief 返回任务下一条事件序号，支持中断后继续追加。"""
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(sequence), 0) AS value FROM agent_events WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        return int(row["value"]) + 1
+
+    def get_events_after(
+        self,
+        task_id: str,
+        sequence: int,
+    ) -> list[dict[str, object]]:
+        """! @brief 查询给定序号之后的持久化事件。"""
+
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM agent_events
+                WHERE task_id = ? AND sequence > ?
+                ORDER BY sequence ASC
+                """,
+                (task_id, sequence),
+            ).fetchall()
+        return [self._event_row_to_dict(row) for row in rows]
+
+    @staticmethod
+    def _event_row_to_dict(row) -> dict[str, object]:
+        """! @brief 将 SQLite 事件行转换为 API 字典。"""
+
+        return {
+            "sequence": row["sequence"],
+            "type": row["event_type"],
+            "agent": row["agent"],
+            "iteration": row["iteration"],
+            "message": row["message"],
+            "data": json.loads(row["data_json"]),
+            "created_at": row["created_at"],
+        }
 
     def add_event(
         self,
@@ -250,6 +342,8 @@ class TaskRepository:
         tool: str,
         arguments: dict[str, object],
         result_preview: str,
+        duration_seconds: float = 0.0,
+        succeeded: bool = True,
     ) -> None:
         """! @brief 保存一条工具调用记录。
 
@@ -273,9 +367,11 @@ class TaskRepository:
                     tool,
                     arguments_json,
                     result_preview,
+                    duration_seconds,
+                    succeeded,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -290,6 +386,8 @@ class TaskRepository:
                         default=str,
                     ),
                     result_preview,
+                    duration_seconds,
+                    int(succeeded),
                     _now_iso(),
                 ),
             )
@@ -318,22 +416,7 @@ class TaskRepository:
 
         # 写入时保存为 JSON 文本，查询边界再还原成 Python dict，API 层
         # 不需要知道 SQLite 内部采用了 arguments_json/data_json 字段。
-        return [
-            {
-                "sequence": row["sequence"],
-                "type": row["event_type"],
-                "agent": row["agent"],
-                "iteration": row["iteration"],
-                "message": row["message"],
-                "data": json.loads(
-                    row["data_json"]
-                ),
-                "created_at": row[
-                    "created_at"
-                ],
-            }
-            for row in rows
-        ]
+        return [self._event_row_to_dict(row) for row in rows]
 
     def get_tool_calls(
         self,
@@ -370,6 +453,8 @@ class TaskRepository:
                 "result_preview": row[
                     "result_preview"
                 ],
+                "duration_seconds": float(row["duration_seconds"]),
+                "succeeded": bool(row["succeeded"]),
                 "created_at": row[
                     "created_at"
                 ],

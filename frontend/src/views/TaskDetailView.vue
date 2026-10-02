@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { ArrowLeft, Braces, Clock3, FolderGit2, GitBranch, ListChecks, LoaderCircle, Terminal, Wrench } from '@lucide/vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { Activity, ArrowLeft, Braces, Clock3, FolderGit2, GitBranch, ListChecks, LoaderCircle, Play, Square, Terminal, Wrench } from '@lucide/vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 import { getErrorMessage } from '../api/client'
-import { getTask } from '../api/tasks'
+import { reconnectTaskStream, resumeTaskStream } from '../api/stream'
+import { cancelTask, getTask, getTaskMetrics } from '../api/tasks'
 import TaskResults from '../components/TaskResults.vue'
-import type { TaskDetailResponse } from '../types/agent'
+import type { AgentEvent, TaskDetailResponse } from '../types/agent'
 
 const route = useRoute()
 const detail = ref<TaskDetailResponse | null>(null)
 const loading = ref(true)
 const error = ref('')
+const metrics = ref<Record<string, unknown> | null>(null)
+let streamController: AbortController | null = null
 const sourceLabel = computed(() => {
   const source = detail.value?.source?.source
   if (!source || typeof source !== 'object') return 'Local task'
@@ -20,10 +23,16 @@ const sourceLabel = computed(() => {
 })
 
 async function loadTask() {
+  streamController?.abort()
+  streamController = null
   loading.value = true
   error.value = ''
   try {
     detail.value = await getTask(String(route.params.taskId))
+    metrics.value = await getTaskMetrics(String(route.params.taskId))
+    if (['running', 'cancelling'].includes(detail.value.task.status)) {
+      void observeRunningTask(false)
+    }
   } catch (caught) {
     error.value = getErrorMessage(caught)
   } finally {
@@ -31,15 +40,61 @@ async function loadTask() {
   }
 }
 
+async function observeRunningTask(resume: boolean) {
+  if (!detail.value) return
+  streamController?.abort()
+  const controller = new AbortController()
+  streamController = controller
+  const taskId = detail.value.task.id
+  const onEvent = (event: AgentEvent) => {
+    if (!detail.value) return
+    detail.value.events.push({
+      ...event,
+      sequence: event.sequence ?? (detail.value.events.at(-1)?.sequence ?? 0) + 1,
+      created_at: event.created_at ?? new Date().toISOString(),
+    })
+    if (event.type === 'cancelled') detail.value.task.status = 'cancelled'
+    if (event.type === 'error') detail.value.task.status = 'failed'
+  }
+  try {
+    if (resume) {
+      detail.value.task.status = 'running'
+      await resumeTaskStream(taskId, onEvent, controller.signal)
+    } else {
+      const sequence = detail.value.events.at(-1)?.sequence ?? 0
+      await reconnectTaskStream(taskId, sequence, onEvent, controller.signal)
+    }
+    detail.value = await getTask(taskId)
+    metrics.value = await getTaskMetrics(taskId)
+  } catch (caught) {
+    if (!controller.signal.aborted) error.value = getErrorMessage(caught)
+  }
+}
+
+async function handleCancel() {
+  if (!detail.value) return
+  try {
+    await cancelTask(detail.value.task.id)
+    detail.value.task.status = 'cancelling'
+  } catch (caught) {
+    error.value = getErrorMessage(caught)
+  }
+}
+
 onMounted(loadTask)
 watch(() => route.params.taskId, loadTask)
+onBeforeUnmount(() => streamController?.abort())
 </script>
 
 <template>
   <main class="task-detail-view">
     <div class="workspace-heading">
       <div><RouterLink class="back-link" to="/"><ArrowLeft :size="15" /> Workspace</RouterLink><h1>Task Trace</h1></div>
-      <div v-if="detail" class="task-status" :data-status="detail.task.status"><span></span>{{ detail.task.status.replaceAll('_', ' ') }}</div>
+      <div v-if="detail" class="task-status" :data-status="detail.task.status">
+        <span></span>{{ detail.task.status.replaceAll('_', ' ') }}
+        <button v-if="detail.task.status === 'running'" class="danger-button" type="button" @click="handleCancel"><Square :size="12" fill="currentColor" /> Cancel</button>
+        <button v-if="detail.task.status === 'interrupted'" class="primary-button" type="button" @click="observeRunningTask(true)"><Play :size="13" fill="currentColor" /> Resume</button>
+      </div>
     </div>
     <div v-if="loading" class="loading-row"><LoaderCircle :size="18" class="spin" /> Loading task</div>
     <div v-else-if="error" class="error-banner" role="alert">{{ error }}</div>
@@ -50,6 +105,11 @@ watch(() => route.params.taskId, loadTask)
         <div><GitBranch :size="17" /><span>Source</span><code>{{ sourceLabel }}</code></div>
       </section>
       <section class="detail-question"><p class="eyebrow">DEVELOPMENT REQUEST</p><h2>{{ detail.task.question }}</h2></section>
+      <section v-if="metrics" class="task-summary-band">
+        <div><Activity :size="17" /><span>Tokens</span><code>{{ metrics.total_tokens ?? 0 }}</code></div>
+        <div><Clock3 :size="17" /><span>LLM time</span><code>{{ metrics.llm_seconds ?? 0 }}s</code></div>
+        <div><Wrench :size="17" /><span>Tool time</span><code>{{ metrics.tool_seconds ?? 0 }}s</code></div>
+      </section>
       <section class="detail-plan">
         <header class="column-header"><ListChecks :size="17" /><h2>Approved plan</h2><span class="column-count">{{ detail.task.plan.length }}</span></header>
         <div class="detail-plan-grid">
@@ -72,7 +132,7 @@ watch(() => route.params.taskId, loadTask)
           <div class="detail-list">
             <article v-for="(call, index) in detail.tool_calls" :key="index" class="tool-call-row">
               <div><Braces :size="15" /><strong>{{ call.tool }}</strong><span>{{ call.agent }}</span></div>
-              <pre>{{ JSON.stringify(call.arguments, null, 2) }}</pre><p>{{ call.result_preview }}</p>
+              <pre>{{ JSON.stringify(call.arguments, null, 2) }}</pre><p>{{ call.result_preview }}</p><small>{{ call.duration_seconds.toFixed(3) }}s · {{ call.succeeded ? 'ok' : 'failed' }}</small>
             </article>
             <div v-if="!detail.tool_calls.length" class="empty-state">No tool calls recorded</div>
           </div>

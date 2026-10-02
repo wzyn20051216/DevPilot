@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from .models.agent_state import ToolCallRecord
 from .models.agent_state import PlanStep
 from .models.publish import PublishPreview
-from .models.task import DevelopmentTask
+from .models.task import DevelopmentTask, ExecutionMode
 
 
 class ChatRequest(BaseModel):
@@ -41,6 +41,10 @@ class AgentRunRequest(BaseModel):
 
     repo_path: str = Field(..., min_length=1, description="仓库路径")
     question: str = Field(..., min_length=1, description="用户问题")
+    execution_mode: ExecutionMode = Field(
+        default="single_no_rag",
+        description="实际执行策略；默认采用当前评测中更可靠的单 Agent 无 RAG",
+    )
 
 class AgentRunResponse(BaseModel):
     """响应数据模型，包含 Agent 的运行结果。"""
@@ -107,6 +111,7 @@ class GitHubIssueImportRequest(
         min_length=1,
         description="本地代码仓库路径，DevPilot 会在该仓库上执行分析和修改",
     )
+    execution_mode: ExecutionMode = "single_no_rag"
 
 
 class GitHubIssueImportResponse(

@@ -51,8 +51,9 @@ def test_execute_failure_is_streamed_and_persisted(
     """执行中断时 SSE、任务状态和事件历史必须同时记录失败。"""
 
     class FailingOrchestrator:
-        def __init__(self, repo_path: str) -> None:
+        def __init__(self, repo_path: str, cancel_check=None, **_kwargs) -> None:
             self.repo_path = repo_path
+            self.cancel_check = cancel_check
 
         def execute_stream(
             self,
@@ -70,6 +71,7 @@ def test_execute_failure_is_streamed_and_persisted(
             repo_path=str(tmp_path),
             question="test",
             plan=[PlanStep(id=1, title="step", description="test")],
+            execution_mode="multi_no_rag",
         )
         response = client.post(f"/api/tasks/{task.id}/execute")
         detail = client.get(f"/api/tasks/{task.id}")
