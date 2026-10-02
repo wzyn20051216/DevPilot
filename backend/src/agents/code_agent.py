@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from .base_tool_agent import BaseToolAgent
 
 
@@ -14,6 +16,8 @@ CODER_PROMPT = """
 4. 修改后必须查看 git_diff。
 5. 不负责最终代码审查。
 6. 不要声称测试通过，测试由 Tester Agent 完成。
+7. 大文件先 search_code 定位，再用 read_file 的 start_line/end_line 读取局部，
+   优先用 replace_in_file 做唯一锚点替换，避免重写整个文件。
 """
 
 
@@ -25,6 +29,7 @@ class CodeAgent(BaseToolAgent):
         repo_path: str,
         max_iterations: int = 8,
         enable_rag: bool = True,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> None:
         """初始化 Coder agent。
 
@@ -38,6 +43,7 @@ class CodeAgent(BaseToolAgent):
             "read_file",
             "search_code",
             "write_file",
+            "replace_in_file",
             "git_diff",
         }
         if enable_rag:
@@ -51,4 +57,5 @@ class CodeAgent(BaseToolAgent):
             system_prompt=CODER_PROMPT,
             allowed_tools=tools,
             max_iterations=max_iterations,
+            cancel_check=cancel_check,
         )

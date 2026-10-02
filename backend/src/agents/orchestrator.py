@@ -4,7 +4,7 @@
 谁给谁反馈
 '''
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from ..models.agent_state import (
     AgentEvent,
@@ -70,6 +70,7 @@ class DevPilotOrchestrator:
         repo_path: str,
         max_repair_rounds: int = 2,
         enable_rag: bool = True,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> None:
         """初始化编排器，并实例化四个角色 agent。
 
@@ -82,10 +83,23 @@ class DevPilotOrchestrator:
         self.repo_path = repo_path
         self.max_repair_rounds = max_repair_rounds
         self.enable_rag: bool = enable_rag
-        self.planner = PlannerAgent(repo_path, enable_rag=enable_rag)
-        self.coder = CodeAgent(repo_path, enable_rag=enable_rag)
-        self.tester = TesterAgent(repo_path)
-        self.reviewer = ReviewerAgent(repo_path, enable_rag=enable_rag)
+        self.cancel_check = cancel_check or (lambda: False)
+        self.planner = PlannerAgent(
+            repo_path,
+            enable_rag=enable_rag,
+            cancel_check=self.cancel_check,
+        )
+        self.coder = CodeAgent(
+            repo_path,
+            enable_rag=enable_rag,
+            cancel_check=self.cancel_check,
+        )
+        self.tester = TesterAgent(repo_path, cancel_check=self.cancel_check)
+        self.reviewer = ReviewerAgent(
+            repo_path,
+            enable_rag=enable_rag,
+            cancel_check=self.cancel_check,
+        )
 
     def _run_tester(self, question: str) -> tuple[list[AgentEvent], TesterOutput | None]:
         """
@@ -117,9 +131,13 @@ class DevPilotOrchestrator:
         if saw_error and not tester_answer:
             return events, None
 
-        # 情况 2：tester 有 final 产出，尝试解析成 TesterOutput。
-        # 若只是最终 JSON 格式有瑕疵，但 run_test 已返回真实结果，
-        # 则使用机器结果，避免把「测试通过」错判为「流程失败」。
+        # run_test 的机器结果是唯一可信的通过判据。LLM 的最终 JSON 只在
+        # 没有机器结果时用于诊断，绝不能把真实失败覆盖成通过。
+        if observed_report is not None:
+            return events, observed_report
+
+        # 没有观察到 run_test 时，仍解析最终输出用于展示，但上层不得把
+        # 这种“只靠模型声明”的结果当成已验证成功。
         if tester_answer:
             try:
                 report = parse_structured_output(
@@ -127,9 +145,14 @@ class DevPilotOrchestrator:
                     TesterOutput,
                 )
             except ValueError:
-                report = observed_report
-        else:
-            report = observed_report
+                report = None
+
+        if report is not None:
+            report.passed = False
+            report.summary = (
+                "Tester 未调用 run_test，不能确认测试通过。"
+                + (f" 模型说明：{report.summary}" if report.summary else "")
+            )
         return events, report
 
     def run_stream(self, question: str) -> Iterator[AgentEvent]:

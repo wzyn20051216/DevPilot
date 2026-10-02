@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from ..sandbox.docker_runner import run_in_sandbox
 ALLOWED_COMMANDS=[
+    "python",# 隔离容器内的只读运行时探针
     "pytest",# 单元测试
     "ruff",# 代码格式化、lint检查
     "mypy"# python静态类型检查

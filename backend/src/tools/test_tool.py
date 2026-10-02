@@ -5,6 +5,7 @@
 # 调本机 venv 里的 python；现在改成 sandbox 之后这个函数已经不再被调用
 # （保留只是因为你的代码要求"不要动我的代码"，删它属于改动逻辑）。
 import shutil
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -29,9 +30,13 @@ def _find_project_python(
 def run_tests(
     repo_path: str,
     target: str | None = None,
+    targets: list[str] | None = None,
     timeout: int = 120,
 ) -> dict[str, Any]:
     """在 Docker Sandbox 中运行 pytest。"""
+
+    if target and targets:
+        raise ValueError("target 与 targets 不能同时传入")
 
     argv = [
         "python",
@@ -45,7 +50,11 @@ def run_tests(
     ]
 
     if target:
-        argv.append(target)
+        # 模型常按 pytest CLI 习惯传入 ``file.py -k "expr"``。使用 shlex
+        # 拆为 argv 后仍由 Docker 的 shell=False 执行，不引入命令注入。
+        argv.extend(shlex.split(target))
+    elif targets:
+        argv.extend(targets)
 
     result = run_in_sandbox(
         repo_path=repo_path,

@@ -17,6 +17,8 @@ from backend.src.exceptions import ExternalServiceError
 from backend.src.mcp_clients import repository_client
 from backend.src.models.agent_state import AgentEvent
 from backend.src.sandbox import docker_runner
+from backend.src.tools import test_tool
+from backend.src.tools import command_tool
 
 
 def _response(
@@ -152,6 +154,104 @@ def test_agent_forces_final_answer_after_tool_iteration_limit(
     assert events[-1].data["usage"]["total_tokens"] == 10
 
 
+def test_agent_forces_write_tool_after_edit_deadline(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """定位超时且尚无改动时，下一轮必须收敛到写入工具。"""
+
+    replace_definition = {
+        "type": "function",
+        "function": {
+            "name": "replace_in_file",
+            "description": "replace",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    monkeypatch.setattr(
+        base_tool_agent,
+        "get_tool_definitions",
+        lambda **_: [replace_definition],
+    )
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=_FakeCompletions(
+                [
+                    _response(tool_calls=[_tool_call(name="replace_in_file")]),
+                    _response(content="done"),
+                ]
+            )
+        )
+    )
+    monkeypatch.setattr(base_tool_agent, "create_client", lambda: client)
+    monkeypatch.setattr(
+        base_tool_agent,
+        "execute_tool",
+        lambda **_: {"changed": True, "file_path": "src/a.py"},
+    )
+    agent = BaseToolAgent(
+        repo_path=".",
+        name="coder",
+        system_prompt="test",
+        allowed_tools={"replace_in_file"},
+        max_iterations=2,
+        edit_deadline=1,
+    )
+
+    events = list(agent.run_stream("fix"))
+
+    assert events[-1].type == "final"
+    assert client.chat.completions.requests[0]["tool_choice"] == "auto"
+    assert [
+        item["function"]["name"]
+        for item in client.chat.completions.requests[0]["tools"]
+    ] == ["replace_in_file"]
+    assert client.chat.completions.requests[1]["tool_choice"] == "auto"
+    assert events[-1].data["tool_calls"][0]["succeeded"] is True
+
+
+def test_agent_rejects_text_only_completion_before_required_edit(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """到编辑阶段后，纯文字建议不能被当作任务完成。"""
+
+    definition = {
+        "type": "function",
+        "function": {"name": "replace_in_file", "parameters": {"type": "object"}},
+    }
+    monkeypatch.setattr(base_tool_agent, "get_tool_definitions", lambda **_: [definition])
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=_FakeCompletions(
+                [
+                    _response(content="建议修改"),
+                    _response(tool_calls=[_tool_call(name="replace_in_file")]),
+                    _response(content="done"),
+                ]
+            )
+        )
+    )
+    monkeypatch.setattr(base_tool_agent, "create_client", lambda: client)
+    monkeypatch.setattr(
+        base_tool_agent,
+        "execute_tool",
+        lambda **_: {"changed": True, "file_path": "src/a.py"},
+    )
+    agent = BaseToolAgent(
+        repo_path=".",
+        name="coder",
+        system_prompt="test",
+        allowed_tools={"replace_in_file"},
+        max_iterations=3,
+        edit_deadline=1,
+    )
+
+    events = list(agent.run_stream("fix"))
+
+    assert events[-1].type == "final"
+    assert events[-1].message == "done"
+    assert len([event for event in events if event.type == "tool_call"]) == 1
+
+
 def test_run_test_event_exposes_structured_report(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -182,6 +282,56 @@ def test_run_test_event_exposes_structured_report(
 
     assert tool_result.data["test_report"]["passed"] is True
     assert tool_result.data["test_report"]["stdout"] == "x" * 4_000
+
+
+def test_agent_stops_tools_after_modified_code_passes_full_suite(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """源码已修改且全量测试通过后，应直接收尾，避免继续消耗工具轮次。"""
+
+    definitions = [
+        {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+        for name in ("replace_in_file", "run_test")
+    ]
+    monkeypatch.setattr(base_tool_agent, "get_tool_definitions", lambda **_: definitions)
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=_FakeCompletions(
+                [
+                    _response(tool_calls=[_tool_call(name="replace_in_file")]),
+                    _response(tool_calls=[_tool_call(name="run_test")]),
+                    _response(content="all done"),
+                ]
+            )
+        )
+    )
+    monkeypatch.setattr(base_tool_agent, "create_client", lambda: client)
+
+    def fake_execute(tool_name: str, **_: Any) -> dict[str, Any]:
+        if tool_name == "replace_in_file":
+            return {"changed": True, "file_path": "src/a.py"}
+        return {
+            "passed": True,
+            "returncode": 0,
+            "stdout": "1 passed",
+            "stderr": "",
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(base_tool_agent, "execute_tool", fake_execute)
+    agent = BaseToolAgent(
+        repo_path=".",
+        name="coder",
+        system_prompt="test",
+        allowed_tools={"replace_in_file", "run_test"},
+        max_iterations=5,
+    )
+
+    events = list(agent.run_stream("fix"))
+
+    assert events[-1].message == "all done"
+    assert client.chat.completions.requests[-1]["tool_choice"] == "none"
+    assert len(client.chat.completions.requests) == 3
 
 
 def test_tester_falls_back_to_run_test_result() -> None:
@@ -220,6 +370,60 @@ def test_tester_falls_back_to_run_test_result() -> None:
     assert report.stdout == "1 passed"
 
 
+def test_tester_machine_result_overrides_conflicting_llm_claim() -> None:
+    """LLM 的合法 JSON 也不能把真实测试失败改写成通过。"""
+
+    class ConflictingTester:
+        def run_stream(self, question: str):
+            yield AgentEvent(
+                type="tool_result",
+                agent="tester",
+                data={
+                    "test_report": {
+                        "passed": False,
+                        "summary": "pytest returncode=1",
+                        "stdout": "1 failed",
+                        "stderr": "",
+                    }
+                },
+            )
+            yield AgentEvent(
+                type="final",
+                agent="tester",
+                message='{"passed": true, "summary": "全部通过"}',
+            )
+
+    orchestrator = object.__new__(DevPilotOrchestrator)
+    orchestrator.tester = ConflictingTester()
+
+    _, report = orchestrator._run_tester("验证修改")
+
+    assert report is not None
+    assert report.passed is False
+    assert report.stdout == "1 failed"
+
+
+def test_tester_without_run_test_cannot_claim_success() -> None:
+    """没有机器测试结果时，模型自报成功应降级为未通过。"""
+
+    class ClaimOnlyTester:
+        def run_stream(self, question: str):
+            yield AgentEvent(
+                type="final",
+                agent="tester",
+                message='{"passed": true, "summary": "看起来没问题"}',
+            )
+
+    orchestrator = object.__new__(DevPilotOrchestrator)
+    orchestrator.tester = ClaimOnlyTester()
+
+    _, report = orchestrator._run_tester("验证修改")
+
+    assert report is not None
+    assert report.passed is False
+    assert "未调用 run_test" in report.summary
+
+
 def test_sandbox_timeout_is_returned_as_structured_result(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -241,6 +445,87 @@ def test_sandbox_timeout_is_returned_as_structured_result(
     assert result["timed_out"] is True
     assert result["returncode"] is None
     assert "超过 1 秒" in result["stderr"]
+
+
+def test_trusted_sandbox_profile_is_scoped_and_quotes_argv(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """可信评测配置应只在上下文内切换镜像，并安全传递测试参数。"""
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(docker_runner.shutil, "which", lambda _: "docker")
+
+    def completed(command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(docker_runner.subprocess, "run", completed)
+    profile = docker_runner.SandboxProfile(
+        image="trusted/eval:image",
+        command_prefix=("source /activate",),
+        mount_target="/testbed",
+    )
+    with docker_runner.use_sandbox_profile(profile):
+        docker_runner.run_in_sandbox(
+            repo_path=str(tmp_path),
+            argv=["pytest", "tests/a file.py"],
+        )
+    docker_runner.run_in_sandbox(repo_path=str(tmp_path), argv=["pytest"])
+
+    assert "trusted/eval:image" in commands[0]
+    assert commands[0][-3:-1] == ["/bin/bash", "-lc"]
+    assert "'tests/a file.py'" in commands[0][-1]
+    assert "/testbed" in commands[0]
+    assert docker_runner.SANDBOX_IMAGE in commands[1]
+
+
+def test_run_test_splits_pytest_target_arguments(monkeypatch: MonkeyPatch) -> None:
+    """pytest 文件和 -k 表达式应作为独立 argv 传入沙箱。"""
+
+    captured: dict[str, Any] = {}
+
+    def fake_sandbox(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"returncode": 0, "timed_out": False, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(test_tool, "run_in_sandbox", fake_sandbox)
+    result = test_tool.run_tests(".", 'tests/test_a.py -k "alpha or beta"')
+
+    assert captured["argv"][-3:] == ["tests/test_a.py", "-k", "alpha or beta"]
+    assert result["passed"] is True
+
+
+def test_run_test_preserves_exact_target_list(monkeypatch: MonkeyPatch) -> None:
+    """内部裁判传入的参数化 pytest 节点不得被 shlex 再次拆分。"""
+
+    captured: dict[str, Any] = {}
+
+    def fake_sandbox(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"returncode": 0, "timed_out": False, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(test_tool, "run_in_sandbox", fake_sandbox)
+    node = "tests/test_a.py::test_value[hello world]"
+    test_tool.run_tests(".", targets=[node])
+
+    assert captured["argv"][-1] == node
+
+
+def test_python_probe_runs_only_inside_sandbox(monkeypatch: MonkeyPatch) -> None:
+    """运行时 Python 探针应原样交给隔离沙箱，不在宿主机执行。"""
+
+    captured: dict[str, Any] = {}
+
+    def fake_sandbox(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"returncode": 0, "timed_out": False, "stdout": "value", "stderr": ""}
+
+    monkeypatch.setattr(command_tool, "run_in_sandbox", fake_sandbox)
+    result = command_tool.run_command(".", ["python", "-c", "print(object())"])
+
+    assert captured["argv"][0] == "python"
+    assert result["stdout"] == "value"
 
 
 @pytest.mark.asyncio

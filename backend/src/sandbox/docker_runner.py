@@ -1,8 +1,12 @@
 import shutil
+import shlex
 import subprocess
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Any
+from typing import Any, Iterator
 
 from ..config import settings
 
@@ -14,6 +18,32 @@ from ..config import settings
 # 沙箱镜像的 tag，必须和 docker build -t 的名字保持一致。
 # Dockerfile 在 backend/docker/sandbox.Dockerfile。
 SANDBOX_IMAGE = settings.sandbox_image
+
+
+@dataclass(frozen=True)
+class SandboxProfile:
+    """! @brief 由可信调用方选择的沙箱镜像及命令前缀。"""
+
+    image: str
+    command_prefix: tuple[str, ...] = ()
+    mount_target: str = "/workspace"
+
+
+_ACTIVE_PROFILE: ContextVar[SandboxProfile | None] = ContextVar(
+    "devpilot_sandbox_profile",
+    default=None,
+)
+
+
+@contextmanager
+def use_sandbox_profile(profile: SandboxProfile) -> Iterator[None]:
+    """! @brief 在线程/协程局部范围内启用可信沙箱配置。"""
+
+    token: Token[SandboxProfile | None] = _ACTIVE_PROFILE.set(profile)
+    try:
+        yield
+    finally:
+        _ACTIVE_PROFILE.reset(token)
 
 # 白名单：sandbox 里只允许跑这几个可执行程序。
 # 任意 `argv[0]` 命中白名单才能进容器，否则直接拒绝（防止 agent 用 `rm`/`curl`/`bash` 越权）。
@@ -90,15 +120,26 @@ def run_in_sandbox(
     # `readonly` 是关键：agent 通过工具只能**读**代码、**写**文件必须走 write_file 工具
     # （write_file 工具自己有 review 逻辑），不允许它在容器里偷偷改宿主机文件。
     mount_source = resolve_host_mount_path(repo)
+    profile = _ACTIVE_PROFILE.get()
+    mount_target = profile.mount_target if profile else "/workspace"
+    if not mount_target.startswith("/") or ".." in Path(mount_target).parts:
+        raise ValueError("sandbox mount_target 必须是容器内绝对安全路径")
     mount_value = (
         f"type=bind,"
         f"source={mount_source},"
-        f"target=/workspace,"
+        f"target={mount_target},"
         f"readonly"
     )
 
     # 拼装 docker run 命令：这一长串 flags 是 sandbox 的"安全策略"，
     # 任何一项被去掉都会让 agent 的破坏能力指数级上升，不要轻易删。
+    image = profile.image if profile else SANDBOX_IMAGE
+    container_argv = argv
+    if profile and profile.command_prefix:
+        # argv 已通过白名单；shlex.join 只负责把参数安全地交给容器内 bash。
+        script = " && ".join(profile.command_prefix) + " && exec " + shlex.join(argv)
+        container_argv = ["/bin/bash", "-lc", script]
+
     command = [
         "docker",
         "run",
@@ -138,13 +179,13 @@ def run_in_sandbox(
 
         # 容器里的工作目录就是 /workspace（也就是上面挂载的位置）。
         "--workdir",
-        "/workspace",
+        mount_target,
 
         # 镜像名。
-        SANDBOX_IMAGE,
+        image,
 
         # 真正要执行的命令（剩下的 argv 全部作为参数透传）。
-        *argv,
+        *container_argv,
     ]
 
     # 实际跑 docker run：超时由参数 timeout 控制。

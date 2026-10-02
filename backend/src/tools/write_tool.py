@@ -11,6 +11,43 @@ PROTECTED_FILES={
     ".env.production",
 }
 
+
+def replace_in_file(
+    repo_path: str,
+    file_path: str,
+    old_text: str,
+    new_text: str,
+) -> dict[str, object]:
+    """! @brief 用唯一文本锚点对已有文件做局部原子替换。
+
+    @param repo_path 代码仓库根目录。
+    @param file_path 相对仓库根目录的文件路径。
+    @param old_text 必须在文件中恰好出现一次的原文本。
+    @param new_text 替换后的文本。
+    @return 修改状态和字符数摘要。
+    @raise ValueError 目标受保护、锚点缺失或锚点不唯一时抛出。
+    """
+
+    path = resolve_safe_path(Path(repo_path), relative_path=file_path)
+    if path.name in PROTECTED_FILES or ".git" in path.parts or ".devpilot" in path.parts:
+        raise ValueError(f"禁止操作受保护路径: {file_path}")
+    if not path.is_file():
+        raise FileNotFoundError(f"{file_path} 不是已有文件")
+    if not old_text:
+        raise ValueError("old_text 不能为空")
+    content = path.read_text(encoding="utf-8", errors="strict")
+    occurrences = content.count(old_text)
+    if occurrences != 1:
+        raise ValueError(
+            f"old_text 必须恰好匹配一次，当前匹配 {occurrences} 次"
+        )
+    updated = content.replace(old_text, new_text, 1)
+    return write_file(
+        repo_path=repo_path,
+        file_path=file_path,
+        content=updated,
+    )
+
 def write_file(
      repo_path:str,
      file_path:str,
@@ -39,7 +76,7 @@ def write_file(
     if path.name in PROTECTED_FILES:
         raise ValueError(f"禁止操作{path.name}{repo_path}")
     #禁止操作git版本控制目录
-    if ".git" in path.parts:
+    if ".git" in path.parts or ".devpilot" in path.parts:
         raise ValueError(
             "禁止修改 .git 目录"
         )

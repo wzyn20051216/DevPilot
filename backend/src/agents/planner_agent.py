@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from .base_tool_agent import BaseToolAgent
 
 PLANNER_PROMPT = """
@@ -43,6 +45,7 @@ class PlannerAgent(BaseToolAgent):
         self,
         repo_path: str,
         enable_rag: bool = True,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> None:
         """初始化 Planner agent。
 
@@ -64,4 +67,5 @@ class PlannerAgent(BaseToolAgent):
             system_prompt=PLANNER_PROMPT,
             allowed_tools=tools,
             max_iterations=10,
+            cancel_check=cancel_check,
         )

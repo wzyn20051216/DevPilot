@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from .base_tool_agent import BaseToolAgent
 
 REVIEWER_PROMPT = """
@@ -33,6 +35,7 @@ class ReviewerAgent(BaseToolAgent):
         self,
         repo_path: str,
         enable_rag: bool = True,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> None:
         """初始化 Reviewer agent。
 
@@ -54,4 +57,5 @@ class ReviewerAgent(BaseToolAgent):
             system_prompt=REVIEWER_PROMPT,
             allowed_tools=tools,
             max_iterations=5,
+            cancel_check=cancel_check,
         )

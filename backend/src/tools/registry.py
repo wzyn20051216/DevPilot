@@ -14,7 +14,7 @@ from ..mcp_clients.repository_client import (
 )
 from .command_tool import run_command
 from .test_tool import run_tests as run_test
-from .write_tool import write_file
+from .write_tool import replace_in_file, write_file
 
 
 MCP_REPOSITORY_TOOLS: set[str] = {
@@ -82,13 +82,36 @@ RUN_TEST_DEFINITION: ChatCompletionFunctionToolParam = {
 }
 
 
+REPLACE_IN_FILE_DEFINITION: ChatCompletionFunctionToolParam = {
+    "type": "function",
+    "function": {
+        "name": "replace_in_file",
+        "description": (
+            "对大型已有文件做局部修改。old_text 必须是从 read_file 读取的"
+            "唯一原文片段；优先使用本工具，避免重写整个文件。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            "required": ["file_path", "old_text", "new_text"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 RUN_COMMAND_DEFINITION: ChatCompletionFunctionToolParam = {
     "type": "function",
     "function": {
         "name": "run_command",
         "description": (
             "执行受限的代码质量命令。"
-            "目前只允许 pytest、ruff、mypy。"
+            "允许 python、pytest、ruff、mypy；命令在禁网、只读、限资源的"
+            "Docker 沙箱中执行，可用 python -c 观察项目运行时行为。"
         ),
         "parameters": {
             "type": "object",
@@ -114,6 +137,7 @@ RUN_COMMAND_DEFINITION: ChatCompletionFunctionToolParam = {
 
 LOCAL_TOOL_DEFINITIONS: list[ChatCompletionFunctionToolParam] = [
     WRITE_FILE_DEFINITION,
+    REPLACE_IN_FILE_DEFINITION,
     RUN_TEST_DEFINITION,
     RUN_COMMAND_DEFINITION,
 ]
@@ -205,6 +229,14 @@ def execute_tool(
             repo_path=repo_path,
             file_path=arguments["file_path"],
             content=arguments["content"],
+        )
+
+    if tool_name == "replace_in_file":
+        return replace_in_file(
+            repo_path=repo_path,
+            file_path=arguments["file_path"],
+            old_text=arguments["old_text"],
+            new_text=arguments["new_text"],
         )
 
     if tool_name == "run_test":

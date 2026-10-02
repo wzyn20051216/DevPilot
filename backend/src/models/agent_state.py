@@ -37,6 +37,7 @@ AgentEventType = Literal[
     "test_result",  # 测试结果产出
     "final",        # 最终结果
     "error",        # 出错
+    "cancelled",    # 用户取消
 ]
 
 
@@ -146,6 +147,8 @@ class ToolCallRecord(BaseModel):
     # 结果预览字符串，默认空串（而不是 None），
     # 保证序列化/展示时不会出现 NoneType 错误。
     result_preview: str = ""
+    elapsed_seconds: float = Field(default=0.0, ge=0)
+    succeeded: bool = True
 
 class AgentState(BaseModel):
     """DevPilot Agent 当前运行状态的完整快照。"""
@@ -175,6 +178,8 @@ class AgentState(BaseModel):
     prompt_tokens: int = Field(default=0, ge=0, description="累计输入 Token 数")
     completion_tokens: int = Field(default=0, ge=0, description="累计输出 Token 数")
     total_tokens: int = Field(default=0, ge=0, description="累计总 Token 数")
+    llm_seconds: float = Field(default=0.0, ge=0, description="累计模型请求耗时")
+    tool_seconds: float = Field(default=0.0, ge=0, description="累计工具执行耗时")
     # 注意：tests_passed 已被 test_report.passed 取代，此处保留仅为兼容旧引用，
     # 但未跑测试就默认 True 属于危险设计，新代码请改用 test_report。
     tests_passed: bool = True

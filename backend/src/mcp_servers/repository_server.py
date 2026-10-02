@@ -56,6 +56,8 @@ def create_repository_server(
     def read_file(
         file_path: str,
         max_chars: int = 20_000,
+        start_line: int | None = None,
+        end_line: int | None = None,
     ) -> str:
         """! @brief 读取当前代码仓库中的文本文件。
 
@@ -68,6 +70,8 @@ def create_repository_server(
             repo_path=repo_path,
             file_path=file_path,
             max_chars=max_chars,
+            start_line=start_line,
+            end_line=end_line,
         )
 
     @mcp.tool()

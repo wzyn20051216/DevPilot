@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_timeout_seconds: float = Field(default=60.0, gt=0)
     llm_max_retries: int = Field(default=2, ge=0, le=10)
+    agent_token_budget: int = Field(
+        default=0,
+        ge=0,
+        description="单个 Agent 的 Token 上限；0 表示不限制",
+    )
+    tool_observation_max_chars: int = Field(default=16_000, ge=2_000)
+    llm_prompt_cost_per_million: float = Field(default=0.0, ge=0)
+    llm_completion_cost_per_million: float = Field(default=0.0, ge=0)
     mcp_timeout_seconds: float = Field(default=30.0, gt=0)
 
     github_personal_access_token: str | None = None

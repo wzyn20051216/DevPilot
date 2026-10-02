@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from .base_tool_agent import BaseToolAgent
 
 TESTER_PROMPT = """
@@ -33,6 +35,7 @@ class TesterAgent(BaseToolAgent):
     def __init__(
         self,
         repo_path: str,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> None:
         """初始化 Tester agent。
 
@@ -50,4 +53,5 @@ class TesterAgent(BaseToolAgent):
                 "run_command",
             },
             max_iterations=5,
+            cancel_check=cancel_check,
         )

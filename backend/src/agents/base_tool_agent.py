@@ -1,7 +1,8 @@
 #把现有 CodeAgent 抽成基础 Agent
 import json
 from collections.abc import Iterator
-from typing import Any
+from time import perf_counter
+from typing import Any, Callable
 
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -32,6 +33,8 @@ class BaseToolAgent:
         system_prompt: str,
         allowed_tools: set[str],
         max_iterations: int = 8,
+        edit_deadline: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> None:
         # 注意：不要再写成 self.xxx = xxx, (带逗号变 tuple)
         # 同时给 self 属性加显式注解，避免 Pyright 把 self.name
@@ -41,7 +44,31 @@ class BaseToolAgent:
         self.system_prompt: str = system_prompt
         self.allowed_tools: set[str] = set(allowed_tools)
         self.max_iterations: int = max_iterations
+        self.edit_deadline = edit_deadline
+        self.cancel_check = cancel_check or (lambda: False)
         self.client: Any = create_client()
+
+    def _cancellation_event(self, state: AgentState) -> AgentEvent:
+        """! @brief 构造统一的协作式取消事件。"""
+
+        state.status = "failed"
+        return AgentEvent(
+            type="cancelled",
+            agent=self.name,
+            iteration=state.iteration,
+            message=f"{self.name} 已停止：用户取消任务",
+            data={
+                "usage": {
+                    "prompt_tokens": state.prompt_tokens,
+                    "completion_tokens": state.completion_tokens,
+                    "total_tokens": state.total_tokens,
+                },
+                "timing": {
+                    "llm_seconds": state.llm_seconds,
+                    "tool_seconds": state.tool_seconds,
+                },
+            },
+        )
 
     @staticmethod
     def _accumulate_usage(state: AgentState, response: Any) -> None:
@@ -86,6 +113,9 @@ class BaseToolAgent:
             agent=self.name,
             message="DevPilot 开始执行代码仓库",
         )
+        if self.cancel_check():
+            yield self._cancellation_event(state)
+            return
 
         # -------------------------
         # 2. 构建 LLM 上下文
@@ -100,13 +130,22 @@ class BaseToolAgent:
                 "content": question,
             },
         ]
-
         try:
+            # 同一次 Agent 运行的工具 schema 不会变化。只发现一次可避免每轮
+            # 重新启动 Repository MCP 子进程，也减少长任务中的固定延迟。
+            tool_definitions = get_tool_definitions(
+                repo_path=self.repo_path,
+                allowed_tools=self.allowed_tools,
+            )
+            full_test_passed = False
             # -------------------------
             # 3. Agent Loop
             # -------------------------
             for iteration in range(1, self.max_iterations + 1):
                 state.iteration = iteration
+                if self.cancel_check():
+                    yield self._cancellation_event(state)
+                    return
                 yield AgentEvent(
                     type="thinking",
                     agent=self.name,
@@ -117,19 +156,78 @@ class BaseToolAgent:
                 # -------------------------
                 # 4. 调用 LLM（按 allowed_tools 过滤）
                 # -------------------------
+                llm_started = perf_counter()
+                must_edit = (
+                    self.edit_deadline is not None
+                    and iteration >= self.edit_deadline
+                    and not state.modified_files
+                )
+                active_tool_definitions = tool_definitions
+                tool_choice: str = "auto"
+                if full_test_passed:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "代码已修改且完整测试套件通过。不得再调用工具，"
+                                "请立即简要总结修改和验证结果。"
+                            ),
+                        }
+                    )
+                    tool_choice = "none"
+                elif must_edit:
+                    active_tool_definitions = [
+                        definition
+                        for definition in tool_definitions
+                        if definition["function"]["name"]
+                        in {"replace_in_file", "write_file"}
+                    ]
+                    if active_tool_definitions:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "定位预算已经结束。本轮必须立即调用写入工具"
+                                    "实施当前最可信的最小修复；不得继续搜索或只输出建议。"
+                                ),
+                            }
+                        )
                 response = self.client.chat.completions.create(
                     model=settings.llm_model,
                     messages=messages,
-                    tools=get_tool_definitions(
-                        repo_path=self.repo_path,
-                        allowed_tools=self.allowed_tools,
-                    ),
-                    tool_choice="auto",
+                    tools=active_tool_definitions,
+                    tool_choice=tool_choice,
                     temperature=0.2,
                 )
+                state.llm_seconds += perf_counter() - llm_started
                 # Usage 属于本次 LLM 请求，不包含前几轮，所以每轮都要累加。
                 # 使用 getattr 兼容不返回 usage 或字段为空的 OpenAI 兼容服务。
                 self._accumulate_usage(state, response)
+                if (
+                    settings.agent_token_budget > 0
+                    and state.total_tokens > settings.agent_token_budget
+                ):
+                    yield AgentEvent(
+                        type="error",
+                        agent=self.name,
+                        iteration=iteration,
+                        message=(
+                            "Agent Token 预算已用尽："
+                            f"{state.total_tokens}/{settings.agent_token_budget}"
+                        ),
+                        data={
+                            "usage": {
+                                "prompt_tokens": state.prompt_tokens,
+                                "completion_tokens": state.completion_tokens,
+                                "total_tokens": state.total_tokens,
+                            },
+                            "timing": {
+                                "llm_seconds": state.llm_seconds,
+                                "tool_seconds": state.tool_seconds,
+                            },
+                        },
+                    )
+                    return
                 message = response.choices[0].message
 
                 # -------------------------
@@ -161,6 +259,21 @@ class BaseToolAgent:
                         assistant_message["tool_calls"] = assistant_tool_calls
                 messages.append(assistant_message)
 
+                # DeepSeek thinking 模式不支持 tool_choice="required"。当编辑
+                # 截止轮次已到而模型只给文字时，拒绝提前结束并继续下一轮；
+                # 同时只暴露写工具，从协议层把行为收敛到真实代码修改。
+                if must_edit and not message.tool_calls:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "当前任务尚未产生任何代码改动，不能结束。"
+                                "请在下一轮调用可用的写入工具实施最小修复。"
+                            ),
+                        }
+                    )
+                    continue
+
                 # -------------------------
                 # 6. 没有 Tool Call → Agent 任务完成
                 # -------------------------
@@ -181,6 +294,10 @@ class BaseToolAgent:
                                 "completion_tokens": state.completion_tokens,
                                 "total_tokens": state.total_tokens,
                             },
+                            "timing": {
+                                "llm_seconds": state.llm_seconds,
+                                "tool_seconds": state.tool_seconds,
+                            },
                         },
                     )
                     return
@@ -193,6 +310,9 @@ class BaseToolAgent:
                     # 类型收窄
                     if tool_call.type != "function":
                         continue
+                    if self.cancel_check():
+                        yield self._cancellation_event(state)
+                        return
                     handled_function_call = True
                     tool_name = tool_call.function.name
 
@@ -221,6 +341,7 @@ class BaseToolAgent:
                     # -------------------------
                     # 10. 真正执行 Tool
                     # -------------------------
+                    tool_started = perf_counter()
                     try:
                         result = execute_tool(
                             tool_name=tool_name,
@@ -232,6 +353,8 @@ class BaseToolAgent:
                         # 工具异常也转换成 observation 回传给模型，使模型有机会
                         # 修正参数或选择其它工具，而不是立即终止整个 Agent。
                         result = {"error": str(exc)}
+                    tool_elapsed = perf_counter() - tool_started
+                    state.tool_seconds += tool_elapsed
 
                     # -------------------------
                     # 11. 更新 Agent State
@@ -241,13 +364,17 @@ class BaseToolAgent:
                         tool=tool_name,
                         arguments=arguments,
                         result_preview=str(result)[:500],
+                        elapsed_seconds=tool_elapsed,
+                        succeeded=not (
+                            isinstance(result, dict) and "error" in result
+                        ),
                     )
                     # result_preview 只用于追踪和界面展示，因此限制长度；下方写回
-                    # messages 的工具结果仍然是完整 result，不会损失模型上下文。
+                    # messages 的 observation 使用独立的可配置上限。
                     state.tool_calls.append(record)
 
                     # 11.1 记录已修改文件（write_file 工具）
-                    if tool_name == "write_file" and isinstance(result, dict) and result.get("changed"):
+                    if tool_name in {"write_file", "replace_in_file"} and isinstance(result, dict) and result.get("changed"):
                         modified_path = result.get("file_path")
                         if modified_path and modified_path not in state.modified_files:
                             state.modified_files.append(modified_path)
@@ -265,6 +392,12 @@ class BaseToolAgent:
                             stdout=str(result.get("stdout", "")),
                             stderr=str(result.get("stderr", "")),
                         )
+                        if (
+                            state.test_report.passed
+                            and not arguments.get("target")
+                            and bool(state.modified_files)
+                        ):
+                            full_test_passed = True
 
                     # -------------------------
                     # 12. Tool Result Event
@@ -273,6 +406,10 @@ class BaseToolAgent:
                         "tool": tool_name,
                         "arguments": arguments,
                         "result_preview": str(result)[:500],
+                        "elapsed_seconds": round(tool_elapsed, 6),
+                        "succeeded": not (
+                            isinstance(result, dict) and "error" in result
+                        ),
                     }
                     # Tester 的 run_test 返回值是可信的机器事实。将精简的
                     # 结构化报告放入事件，供 Orchestrator 在 LLM 最终 JSON
@@ -296,13 +433,22 @@ class BaseToolAgent:
                     # -------------------------
                     # 13. Observation 返回给 LLM
                     # -------------------------
+                    observation = json.dumps(result, ensure_ascii=False, default=str)
+                    if len(observation) > settings.tool_observation_max_chars:
+                        tail_chars = min(2_000, settings.tool_observation_max_chars // 4)
+                        head_chars = settings.tool_observation_max_chars - tail_chars
+                        observation = (
+                            observation[:head_chars]
+                            + "\n...[工具结果已截断]...\n"
+                            + observation[-tail_chars:]
+                        )
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             # default=str 让 Path、时间等非原生 JSON 对象也能作为
                             # 文本 observation 返回，不让序列化细节打断工具循环。
-                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                            "content": observation,
                         }
                     )
 
@@ -330,17 +476,42 @@ class BaseToolAgent:
                     ),
                 }
             )
+            llm_started = perf_counter()
             final_response = self.client.chat.completions.create(
                 model=settings.llm_model,
                 messages=messages,
-                tools=get_tool_definitions(
-                    repo_path=self.repo_path,
-                    allowed_tools=self.allowed_tools,
-                ),
+                tools=tool_definitions,
                 tool_choice="none",
                 temperature=0.0,
             )
+            state.llm_seconds += perf_counter() - llm_started
             self._accumulate_usage(state, final_response)
+            if (
+                settings.agent_token_budget > 0
+                and state.total_tokens > settings.agent_token_budget
+            ):
+                state.status = "failed"
+                yield AgentEvent(
+                    type="error",
+                    agent=self.name,
+                    iteration=state.iteration,
+                    message=(
+                        "Agent Token 预算已用尽："
+                        f"{state.total_tokens}/{settings.agent_token_budget}"
+                    ),
+                    data={
+                        "usage": {
+                            "prompt_tokens": state.prompt_tokens,
+                            "completion_tokens": state.completion_tokens,
+                            "total_tokens": state.total_tokens,
+                        },
+                        "timing": {
+                            "llm_seconds": state.llm_seconds,
+                            "tool_seconds": state.tool_seconds,
+                        },
+                    },
+                )
+                return
             final_message = final_response.choices[0].message
             if final_message.tool_calls or not final_message.content:
                 state.status = "failed"
@@ -358,6 +529,10 @@ class BaseToolAgent:
                             "prompt_tokens": state.prompt_tokens,
                             "completion_tokens": state.completion_tokens,
                             "total_tokens": state.total_tokens,
+                        },
+                        "timing": {
+                            "llm_seconds": state.llm_seconds,
+                            "tool_seconds": state.tool_seconds,
                         },
                     },
                 )
@@ -379,6 +554,10 @@ class BaseToolAgent:
                         "completion_tokens": state.completion_tokens,
                         "total_tokens": state.total_tokens,
                     },
+                    "timing": {
+                        "llm_seconds": state.llm_seconds,
+                        "tool_seconds": state.tool_seconds,
+                    },
                 },
             )
             return
@@ -398,7 +577,11 @@ class BaseToolAgent:
                         "prompt_tokens": state.prompt_tokens,
                         "completion_tokens": state.completion_tokens,
                         "total_tokens": state.total_tokens,
-                    }
+                    },
+                    "timing": {
+                        "llm_seconds": state.llm_seconds,
+                        "tool_seconds": state.tool_seconds,
+                    },
                 },
             )
             return

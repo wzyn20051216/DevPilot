@@ -84,6 +84,8 @@ def read_files(
     file_path: str,
     max_size: int = 1024 * 1024,    # 磁盘最大字节，默认 1MB
     max_chars: int = 8000,          # 解码后最大字符数
+    start_line: int | None = None,
+    end_line: int | None = None,
 ) -> str:
     """读取仓库中指定文件的内容，带安全校验和大小/字符截断。
 
@@ -122,6 +124,18 @@ def read_files(
         content = safe_file_path.read_text(encoding="utf-8", errors="ignore")
     except OSError as exc:
         raise RuntimeError(f"读取文件失败: {exc}") from exc
+
+    if start_line is not None or end_line is not None:
+        first = 1 if start_line is None else start_line
+        last = end_line
+        if first < 1 or (last is not None and last < first):
+            raise ValueError("行号范围无效")
+        lines = content.splitlines()
+        selected = lines[first - 1 : last]
+        content = "\n".join(
+            f"{line_number}: {line}"
+            for line_number, line in enumerate(selected, start=first)
+        )
 
     # 按字符截断，超长时追加提示文本，防止撑爆 LLM 上下文
     if len(content) > max_chars:
@@ -185,7 +199,9 @@ def search_code(repo_path: str, keyword: str, max_results: int = 50) -> list[dic
 
         # 逐行找出包含 keyword 的行
         matching_lines = [
-            line for line in content.splitlines() if keyword in line
+            {"line_number": number, "text": line}
+            for number, line in enumerate(content.splitlines(), start=1)
+            if keyword in line
         ]
 
         if matching_lines:
