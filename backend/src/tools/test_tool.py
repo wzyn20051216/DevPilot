@@ -9,7 +9,8 @@ import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
-from ..sandbox.docker_runner import run_in_sandbox
+from ..config import settings
+from ..sandbox.docker_runner import SandboxProfile, run_in_sandbox, use_sandbox_profile
 
 def _find_project_python(
     repo: Path,
@@ -32,8 +33,33 @@ def run_tests(
     target: str | None = None,
     targets: list[str] | None = None,
     timeout: int = 120,
+    command: list[str] | None = None,
 ) -> dict[str, Any]:
-    """在 Docker Sandbox 中运行 pytest。"""
+    """在 Docker Sandbox 中运行测试。
+
+    `command` 为 None 时沿用现有 pytest 路径（一个字符都不变）；
+    提供 `command` 时直接透传该完整 argv，并切换到 polyglot 镜像以支持
+    Node/Java 等非 Python 运行时（白名单仍会拦截非法 argv[0]）。
+    """
+
+    if command is not None:
+        # polyglot 分支：非 Python 语言需要 Node/JDK，镜像换成 polyglot。
+        # 这里以“command 非 None 即视为非 python 验证”为准，避免让调用方
+        # 额外传 language，同时保证旧调用方（command=None）行为零变化。
+        with use_sandbox_profile(SandboxProfile(image=settings.sandbox_image_polyglot)):
+            result = run_in_sandbox(
+                repo_path=repo_path,
+                argv=command,
+                timeout=timeout,
+            )
+        return {
+            **result,
+            "passed": (
+                result["returncode"] == 0
+                and not result["timed_out"]
+            ),
+            "sandboxed": True,
+        }
 
     if target and targets:
         raise ValueError("target 与 targets 不能同时传入")

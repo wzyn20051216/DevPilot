@@ -1,0 +1,17 @@
+{
+  "id": "py_pipeline",
+  "title": "重试期间任务丢失",
+  "description": "Python 跨文件大型 Issue：任务管线在重试瞬时失败任务时丢失任务，根因跨 queue.py 与 pipeline.py 两个文件。",
+  "difficulty": "hard",
+  "category": "cross_module",
+  "tags": ["python", "cross_file", "retry", "queue", "exception_semantics"],
+  "repo_fixture": "py_pipeline_repo",
+  "language": "python",
+  "task": "问题现象：任务管线处理带瞬时故障的任务时，任务在第一次失败后便从队列中消失，最终结果缺失该任务。预期它应在重试后成功。请定位根因——涉及 app/storage/queue.py 的异常语义与 app/pipeline.py 对队列行为的调用假设——并修复，使现有测试通过。不要修改测试文件。",
+  "verification_target": "tests/test_pipeline.py",
+  "retrieval_queries": [
+    {"query": "task queue pop empty exception semantics", "relevant_files": ["app/storage/queue.py"]},
+    {"query": "pipeline retry requeue failed task", "relevant_files": ["app/pipeline.py"]}
+  ],
+  "timeout_seconds": 120
+}

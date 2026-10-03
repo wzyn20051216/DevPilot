@@ -25,6 +25,7 @@ BenchmarkCategory = Literal[
     "configuration",
     "cross_module",
 ]
+BenchmarkLanguage = Literal["python", "typescript", "javascript", "java"]
 
 
 class RetrievalQuery(BaseModel):
@@ -48,6 +49,17 @@ class BenchmarkCase(BaseModel):
     )
     repo_fixture: str = Field(min_length=1, description="benchmarks/repos 下的仓库目录名")
     task: str = Field(min_length=1, description="发送给 Agent 的开发任务")
+    language: BenchmarkLanguage = Field(
+        default="python",
+        description="用例实现语言，决定独立验证走 pytest 还是 polyglot 命令",
+    )
+    verification_command: list[str] | None = Field(
+        default=None,
+        description=(
+            "独立验证的完整 argv；None 时按 python 走 pytest 现有路径，"
+            "非 None 时在 polyglot 沙箱中直接执行该命令"
+        ),
+    )
     verification_target: str | None = Field(
         default=None,
         description="独立验证时传给 pytest 的目标路径",

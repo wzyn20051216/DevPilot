@@ -48,11 +48,17 @@ def use_sandbox_profile(profile: SandboxProfile) -> Iterator[None]:
 # 白名单：sandbox 里只允许跑这几个可执行程序。
 # 任意 `argv[0]` 命中白名单才能进容器，否则直接拒绝（防止 agent 用 `rm`/`curl`/`bash` 越权）。
 # 想要加新工具？同时改这里和 Dockerfile 的 `pip install` 列表。
+# node / npx / javac / java 是为 polyglot benchmark（TypeScript/Java）追加的；
+# 沙箱运行期仍是 --network none + 只读挂载，风险面与 Python 白名单一致。
 ALLOWED_PROGRAMS = {
     "python",
     "pytest",
     "ruff",
     "mypy",
+    "node",
+    "npx",
+    "javac",
+    "java",
 }
 
 

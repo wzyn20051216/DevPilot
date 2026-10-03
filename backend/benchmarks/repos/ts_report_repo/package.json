@@ -1,0 +1,7 @@
+{
+  "name": "ts-report",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "跨文件 TypeScript benchmark：format 舍入 + report 汇总缺陷。"
+}

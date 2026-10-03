@@ -1,0 +1,17 @@
+{
+  "id": "ts_report",
+  "title": "报告百分比舍入错误且空数据返回错误",
+  "description": "TypeScript 报告模块跨文件缺陷：formatPercent 截断而非四舍五入，summarize 对空输入返回错误占位。",
+  "difficulty": "medium",
+  "category": "cross_module",
+  "tags": ["typescript", "cross_file", "rounding", "edge_case"],
+  "repo_fixture": "ts_report_repo",
+  "language": "typescript",
+  "verification_command": ["npx", "tsx", "--test", "tests/report.test.ts"],
+  "task": "报告模块的百分比输出在部分边界值上不准确，且空数据场景返回了错误的占位文本。请定位并修复 src/format.ts 和 src/report.ts 中的缺陷，使现有测试通过。不要修改测试文件。",
+  "retrieval_queries": [
+    {"query": "format percent rounding trunc", "relevant_files": ["src/format.ts"]},
+    {"query": "summarize empty values report", "relevant_files": ["src/report.ts"]}
+  ],
+  "timeout_seconds": 120
+}

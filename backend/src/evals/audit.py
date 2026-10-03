@@ -11,6 +11,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from ..tools.test_tool import run_tests
 from .dataset import (
     BENCHMARK_ROOT,
     calculate_dataset_fingerprint,
@@ -48,9 +49,28 @@ def audit_case(case: BenchmarkCase, execute: bool = True) -> dict[str, Any]:
     if not execute or not fixture.is_dir() or not target.exists():
         return row
 
+    started_at = perf_counter()
+    if case.verification_command is not None:
+        # polyglot 分支：非 Python 用例在沙箱中直接执行 verification_command。
+        # 结果解析沿用 run_tests 的 returncode/timed_out/stdout/stderr 结构；
+        # 初始失败 = returncode != 0 且未超时（超时属于环境问题而非样本红）。
+        result = run_tests(
+            repo_path=str(fixture),
+            command=case.verification_command,
+            timeout=case.timeout_seconds,
+        )
+        row["baseline_exit_code"] = result["returncode"]
+        row["baseline_failed"] = bool(
+            result["returncode"] != 0 and not result["timed_out"]
+        )
+        row["timed_out"] = result["timed_out"]
+        # 失败摘要供审计报告定位初始红的具体用例，截断避免撑爆报告。
+        row["baseline_stderr"] = str(result["stderr"])[-2000:]
+        row["elapsed_seconds"] = round(perf_counter() - started_at, 6)
+        return row
+
     environment = dict(os.environ)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    started_at = perf_counter()
     try:
         result = subprocess.run(
             [

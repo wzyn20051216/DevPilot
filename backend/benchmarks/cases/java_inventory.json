@@ -1,0 +1,17 @@
+{
+  "id": "java_inventory",
+  "title": "库存阈值与价格档位边界判断错误",
+  "description": "Java 跨文件缺陷：Inventory 的库存判断拒绝恰好等于库存的请求，Pricing 的折扣档位在边界值上落入错误档。",
+  "difficulty": "medium",
+  "category": "cross_module",
+  "tags": ["java", "cross_file", "boundary", "business_rule"],
+  "repo_fixture": "java_inventory_repo",
+  "language": "java",
+  "verification_command": ["java", "src/inventory/InventoryTest.java"],
+  "task": "库存系统在请求数量恰好等于库存时被错误拒绝，且折扣档位在 50/100 等边界数量上返回了错误的折扣。请定位并修复 src/inventory/Inventory.java 与 src/inventory/Pricing.java 中的边界判断缺陷，使现有测试通过。不要修改测试文件。",
+  "retrieval_queries": [
+    {"query": "inventory canFulfill stock threshold", "relevant_files": ["src/inventory/Inventory.java"]},
+    {"query": "pricing discount tier boundary", "relevant_files": ["src/inventory/Pricing.java"]}
+  ],
+  "timeout_seconds": 120
+}
