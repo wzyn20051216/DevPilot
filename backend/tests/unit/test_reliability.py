@@ -154,6 +154,72 @@ def test_agent_forces_final_answer_after_tool_iteration_limit(
     assert events[-1].data["usage"]["total_tokens"] == 10
 
 
+def test_context_compaction_keeps_complete_recent_tool_exchange(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """旧回合可压缩，但最近 assistant/tool 配对必须保持完整。"""
+
+    monkeypatch.setattr(base_tool_agent.settings, "agent_recent_messages", 4)
+    monkeypatch.setattr(
+        base_tool_agent.settings,
+        "agent_history_summary_max_chars",
+        1_000,
+    )
+    messages: list[Any] = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "question"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "old",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "old", "content": "old result"},
+        {"role": "user", "content": "continue"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "recent",
+                    "type": "function",
+                    "function": {"name": "run_test", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "recent", "content": "1 passed"},
+        {"role": "user", "content": "summarize"},
+    ]
+    state = base_tool_agent.AgentState(repo_path=".", question="fix")
+
+    compacted, changed = BaseToolAgent._compact_history(messages, state)
+
+    assert changed is True
+    assert len(str(compacted[2]["content"])) <= 1_000
+    assert compacted[0:2] == messages[0:2]
+    assert "read_file" in str(compacted[2]["content"])
+    recent_assistant = next(
+        message
+        for message in compacted
+        if message.get("role") == "assistant"
+    )
+    assert recent_assistant["tool_calls"][0]["id"] == "recent"
+    assert any(
+        message.get("role") == "tool" and message.get("tool_call_id") == "recent"
+        for message in compacted
+    )
+
+    state.modified_files = ["src/" + "x" * 2_000 + ".py"]
+    compacted_with_long_fact, changed = BaseToolAgent._compact_history(messages, state)
+    assert changed is True
+    assert len(str(compacted_with_long_fact[2]["content"])) == 1_000
+
+
 def test_agent_forces_write_tool_after_edit_deadline(
     monkeypatch: MonkeyPatch,
 ) -> None:

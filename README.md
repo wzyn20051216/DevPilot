@@ -149,7 +149,9 @@ docker compose up --build
 | `LLM_TIMEOUT_SECONDS` | 单次 LLM 请求超时秒数 | `60` |
 | `LLM_MAX_RETRIES` | LLM 瞬时故障最大重试次数 | `2` |
 | `AGENT_TOKEN_BUDGET` | 单 Agent 累计 Token 上限；`0` 表示不限制 | `0` |
-| `TOOL_OBSERVATION_MAX_CHARS` | 进入模型上下文的单次工具观测字符上限 | `16000` |
+| `TOOL_OBSERVATION_MAX_CHARS` | 进入模型上下文的单次工具观测字符上限 | `10000` |
+| `AGENT_RECENT_MESSAGES` | 上下文压缩时完整保留的最近消息数 | `12` |
+| `AGENT_HISTORY_SUMMARY_MAX_CHARS` | 旧工具回合结构化摘要的字符上限 | `6000` |
 | `LLM_PROMPT_COST_PER_MILLION` | 每百万输入 Token 成本，仅用于评测估算 | `0` |
 | `LLM_COMPLETION_COST_PER_MILLION` | 每百万输出 Token 成本，仅用于评测估算 | `0` |
 | `MCP_TIMEOUT_SECONDS` | Repository MCP 调用超时秒数 | `30` |

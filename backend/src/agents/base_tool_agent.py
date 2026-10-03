@@ -81,6 +81,72 @@ class BaseToolAgent:
         state.completion_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
         state.total_tokens += int(getattr(usage, "total_tokens", 0) or 0)
 
+    @staticmethod
+    def _compact_history(
+        messages: list[ChatCompletionMessageParam],
+        state: AgentState,
+    ) -> tuple[list[ChatCompletionMessageParam], bool]:
+        """! @brief 压缩旧工具回合，并保留最近完整的协议消息。
+
+        system 与原始 user 消息始终保留。裁剪点若落在 tool 消息中，会向前
+        回退到对应 assistant tool_calls，防止产生没有调用方的孤立结果。
+        """
+
+        recent = settings.agent_recent_messages
+        if len(messages) <= recent + 3:
+            return messages, False
+
+        tail_start = max(2, len(messages) - recent)
+        while tail_start > 2 and messages[tail_start].get("role") == "tool":
+            tail_start -= 1
+        if tail_start <= 2:
+            return messages, False
+
+        removed = messages[2:tail_start]
+        lines: list[str] = []
+        for raw_message in removed:
+            message = dict(raw_message)
+            role = str(message.get("role", "unknown"))
+            if role == "assistant" and message.get("tool_calls"):
+                calls = []
+                for call in message.get("tool_calls", []):
+                    function = dict(call).get("function", {})
+                    name = str(dict(function).get("name", "unknown"))
+                    arguments = str(dict(function).get("arguments", ""))[:300]
+                    calls.append(f"{name}({arguments})")
+                lines.append("调用工具：" + "; ".join(calls))
+                continue
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            limit = 700 if role == "tool" else 400
+            lines.append(f"{role}：{content[:limit]}")
+
+        facts = ["以下是较早操作的压缩记录；最近完整回合仍保留在后文："]
+        if state.modified_files:
+            facts.append("已修改文件：" + ", ".join(map(str, state.modified_files)))
+        if state.test_report is not None:
+            facts.append(
+                "最近测试："
+                + ("通过；" if state.test_report.passed else "失败；")
+                + state.test_report.summary
+            )
+        summary = "\n".join((*facts, *lines))
+        max_chars = settings.agent_history_summary_max_chars
+        if len(summary) > max_chars:
+            prefix = "\n".join(facts) + "\n...[更早记录已省略]...\n"
+            if len(prefix) >= max_chars:
+                summary = prefix[:max_chars]
+            else:
+                summary = prefix + summary[-(max_chars - len(prefix)) :]
+
+        compacted: list[ChatCompletionMessageParam] = [
+            *messages[:2],
+            {"role": "user", "content": summary},
+            *messages[tail_start:],
+        ]
+        return compacted, True
+
     def run_stream(self, question: str) -> Iterator[AgentEvent]:
         """流式执行 agent 的 tool-calling 循环，边跑边产出事件。
 
@@ -152,6 +218,8 @@ class BaseToolAgent:
                     iteration=iteration,
                     message=f"agent 正在第 {iteration} 轮分析",
                 )
+
+                messages, _ = self._compact_history(messages, state)
 
                 # -------------------------
                 # 4. 调用 LLM（按 allowed_tools 过滤）
@@ -476,6 +544,7 @@ class BaseToolAgent:
                     ),
                 }
             )
+            messages, _ = self._compact_history(messages, state)
             llm_started = perf_counter()
             final_response = self.client.chat.completions.create(
                 model=settings.llm_model,

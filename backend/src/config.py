@@ -42,7 +42,13 @@ class Settings(BaseSettings):
         ge=0,
         description="单个 Agent 的 Token 上限；0 表示不限制",
     )
-    tool_observation_max_chars: int = Field(default=16_000, ge=2_000)
+    tool_observation_max_chars: int = Field(default=10_000, ge=2_000)
+    agent_recent_messages: int = Field(
+        default=12,
+        ge=4,
+        description="上下文压缩时完整保留的最近消息数量",
+    )
+    agent_history_summary_max_chars: int = Field(default=6_000, ge=1_000)
     llm_prompt_cost_per_million: float = Field(default=0.0, ge=0)
     llm_completion_cost_per_million: float = Field(default=0.0, ge=0)
     mcp_timeout_seconds: float = Field(default=30.0, gt=0)
