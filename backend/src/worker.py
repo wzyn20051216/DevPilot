@@ -1,0 +1,239 @@
+"""! @brief 独立 Sandbox Worker 进程入口（技术手册 10.2.5）。
+
+Worker 通过持久化任务队列领取任务并在本地进程执行，把 API 从耗时的
+Agent 执行与 Sandbox 调度中解耦。启动方式：``python -m backend.src.worker``。
+
+设计要点：
+- **租约 + 心跳**：领取时写入 ``lease_expires_at``，后台线程周期性续租；
+  Worker 崩溃后租约到期，任务自动重投给其它 Worker；
+- **幂等**：入队靠 ``task_id`` 唯一约束去重，执行靠 ``claim_status`` 的
+  原子状态迁移 + ``attempts`` 上限把反复失败任务送进死信；
+- **优雅退出**：收到 SIGINT 后不再领取新任务，等待在跑任务结束（最多 2
+  个租约周期），超时后进程退出，未完成任务由租约到期机制兜底重投。
+"""
+
+import argparse
+import os
+import signal
+import socket
+import threading
+import time
+from collections.abc import Callable
+
+from loguru import logger
+
+from .agents.orchestrator import DevPilotOrchestrator
+from .config import settings
+from .database.connection import init_database
+from .database.task_repository import task_repository
+from .logging_config import configure_logging
+from .services.task_execution_service import (
+    SingleAgentTaskRunner,
+    TaskExecutionService,
+)
+from .services.task_queue import get_task_queue
+
+
+def _worker_runner_factory(task, cancel_check: Callable[[], bool]):
+    """! @brief 按任务执行策略构造运行器，镜像 ``main._create_task_runner``。
+
+    不在 Worker 里 import ``main``：``main`` 模块导入时即实例化 FastAPI
+    应用并注册大量路由，而 Worker 只需要执行能力，引入它会无谓拖慢启动
+    并引入 HTTP 相关副作用。这里复制同一段策略判断保持行为一致。
+    """
+    enable_rag = task.execution_mode in {"single_rag", "multi_rag"}
+    if task.execution_mode.startswith("single_"):
+        return SingleAgentTaskRunner(
+            repo_path=task.repo_path,
+            enable_rag=enable_rag,
+            cancel_check=cancel_check,
+        )
+    return DevPilotOrchestrator(
+        repo_path=task.repo_path,
+        enable_rag=enable_rag,
+        cancel_check=cancel_check,
+    )
+
+
+def run_worker_once(
+    queue,
+    service: TaskExecutionService,
+    worker_id: str,
+) -> bool:
+    """! @brief 领取并执行至多一个任务，供测试与 ``--once`` 直接复用。
+
+    @return 是否领取到任务（False 表示队列暂无候选）。
+    """
+    queue.reclaim_expired()
+    entry = queue.claim(worker_id)
+    if entry is None:
+        return False
+
+    task_id = entry.task_id
+    # 队列侧已领取，还要在 tasks 表里做一次原子状态迁移，防止同一任务被
+    # API 与 Worker、或多个 Worker 重复执行。迁移失败说明任务状态已变
+    # （例如已 running/cancelled），此时归还队列，交给 attempts 上限兜底。
+    if not service.repository.claim_status(
+        task_id,
+        {"awaiting_approval", "interrupted"},
+        "running",
+    ):
+        queue.complete(task_id, succeeded=False, error="任务状态不允许执行")
+        return True
+
+    service.start(task_id)
+    poll = settings.task_worker_poll_seconds / 4
+    while service.is_running(task_id):
+        time.sleep(poll)
+    status = service.repository.get_task(task_id).status
+    queue.complete(task_id, succeeded=status == "completed")
+    return True
+
+
+def _settle_running(
+    queue,
+    service: TaskExecutionService,
+    inflight: set[str],
+    lock: threading.Lock,
+) -> None:
+    """! @brief 结算本 Worker 已跑完的任务，及时在队列侧收口。
+
+    主循环每次迭代先结算上一轮结束的任务，避免任务在 claim 与 complete
+    之间长时间停留在 claimed 状态；租约虽能兜底，但及时收口让队列统计更准。
+    """
+    with lock:
+        task_ids = list(inflight)
+    for task_id in task_ids:
+        if service.is_running(task_id):
+            # 协作式取消轮询：API 进程只把任务标记为 cancelling（跨进程
+            # 无法直接调用本进程的 service.cancel），Worker 在这里发现
+            # cancelling 状态后触发本地协作式取消。
+            try:
+                if service.repository.get_task(task_id).status == "cancelling":
+                    service.cancel(task_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("任务 {} 取消轮询失败", task_id)
+            continue
+        try:
+            status = service.repository.get_task(task_id).status
+            queue.complete(task_id, succeeded=status == "completed")
+        except Exception:  # noqa: BLE001
+            logger.exception("结算任务 {} 状态失败", task_id)
+        finally:
+            with lock:
+                inflight.discard(task_id)
+
+
+def main() -> None:
+    """! @brief Worker 主入口：初始化、心跳线程、领取-执行主循环、优雅退出。"""
+
+    parser = argparse.ArgumentParser(description="DevPilot Sandbox Worker")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="处理至多一个任务后退出",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help="覆盖队列轮询间隔（调试用）",
+    )
+    args = parser.parse_args()
+
+    configure_logging()
+    init_database()
+
+    queue = get_task_queue()
+    service = TaskExecutionService(
+        repository=task_repository,
+        orchestrator_factory=_worker_runner_factory,
+    )
+    # config.py 未预置 task_worker_id 字段，用 getattr 兜底以免改动 config；
+    # 默认 hostname:pid，多 Worker 部署时能区分租约归属。
+    worker_id = getattr(settings, "task_worker_id", "") or (
+        f"{socket.gethostname()}:{os.getpid()}"
+    )
+
+    if args.once:
+        run_worker_once(queue, service, worker_id)
+        return
+
+    interval = (
+        args.interval if args.interval is not None else settings.task_worker_poll_seconds
+    )
+
+    stop_event = threading.Event()
+    lock = threading.Lock()
+    inflight: set[str] = set()
+
+    def heartbeat_loop() -> None:
+        """! @brief 周期性对在飞任务续租，防止长任务被误判为崩溃。"""
+        while not stop_event.wait(settings.task_worker_heartbeat_seconds):
+            with lock:
+                task_ids = list(inflight)
+            for task_id in task_ids:
+                try:
+                    queue.heartbeat(worker_id, task_id)
+                except Exception:  # noqa: BLE001
+                    logger.exception("任务 {} 心跳失败", task_id)
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        name="devpilot-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
+    def _handle_signal(_signum, _frame) -> None:
+        logger.info("收到退出信号，停止领取新任务")
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    logger.info(
+        "Worker {} 启动（queue backend={}）",
+        worker_id,
+        settings.task_queue_backend,
+    )
+
+    while not stop_event.is_set():
+        try:
+            queue.reclaim_expired()
+            _settle_running(queue, service, inflight, lock)
+            entry = queue.claim(worker_id)
+            if entry is None:
+                continue
+            task_id = entry.task_id
+            if not service.repository.claim_status(
+                task_id,
+                {"awaiting_approval", "interrupted"},
+                "running",
+            ):
+                queue.complete(task_id, succeeded=False, error="任务状态不允许执行")
+                continue
+            with lock:
+                inflight.add(task_id)
+            service.start(task_id)
+        except Exception:  # noqa: BLE001
+            # 单次 claim/execute 失败不能杀死主循环：记录后继续下一轮。
+            logger.exception("Worker 主循环异常，继续下一轮")
+        finally:
+            # 无论是否领到任务都按间隔休眠，避免空转打满 CPU。
+            time.sleep(interval)
+
+    # 优雅退出：不再领新任务，等待在跑任务结束。最长等待 2 个租约周期，
+    # 超时后进程直接退出，未完成任务的租约会在到期后被其它 Worker 重投。
+    deadline = time.monotonic() + 2 * settings.task_worker_lease_seconds
+    while time.monotonic() < deadline:
+        _settle_running(queue, service, inflight, lock)
+        with lock:
+            still_running = any(service.is_running(tid) for tid in inflight)
+        if not still_running:
+            break
+        time.sleep(min(1.0, interval))
+    logger.info("Worker {} 退出", worker_id)
+
+
+if __name__ == "__main__":
+    main()

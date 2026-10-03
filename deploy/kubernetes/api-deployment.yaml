@@ -1,0 +1,55 @@
+# 示例清单，需按集群实际调整。
+# API 进程不接触 Docker：不挂载 docker.sock，任务只入队。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devpilot-api
+  namespace: devpilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: devpilot-api
+  template:
+    metadata:
+      labels:
+        app: devpilot-api
+    spec:
+      containers:
+        - name: api
+          image: devpilot-api:latest # 占位，替换为真实镜像
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: devpilot-config
+          env:
+            - name: DATABASE_PATH
+              value: /app/backend/data/devpilot.db
+            - name: WORKSPACE_ROOT
+              value: /workspace
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+            - name: workspace
+              mountPath: /workspace
+      # 注意：SQLite 后端时，data 卷必须与 Worker 共享同一份持久存储。
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: devpilot-data # 占位，替换为真实 PVC
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: devpilot-workspace # 占位，替换为真实 PVC

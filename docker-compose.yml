@@ -39,6 +39,29 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # API/Worker 分离：Worker 独立进程经任务队列领取并执行任务。
+  # 仅按需启动（docker compose --profile worker up）。
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: python -m backend.src.worker
+    env_file:
+      - ./backend/.env
+    environment:
+      APP_ENV: production
+      TASK_QUEUE_BACKEND: sqlite
+      DATABASE_PATH: /app/backend/data/devpilot.db
+      WORKSPACE_ROOT: /workspace
+      HOST_WORKSPACE_ROOT: ${DEVPILOT_HOST_WORKSPACE_ROOT}
+    volumes:
+      - devpilot_data:/app/backend/data
+      - ${DEVPILOT_HOST_WORKSPACE_ROOT}:/workspace
+      # Worker 负责运行 Sandbox，需要访问宿主机 Docker daemon。
+      - /var/run/docker.sock:/var/run/docker.sock
+    profiles: ["worker"]
+    restart: unless-stopped
+
 volumes:
   # SQLite 使用 Docker 管理的 Linux 文件系统，避免 Windows bind mount 锁冲突。
   devpilot_data:

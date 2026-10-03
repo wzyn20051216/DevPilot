@@ -1,0 +1,15 @@
+# 示例清单，需按集群实际调整。
+# 仅暴露 API；Worker 无需对外 Service，通过队列与 API 协同。
+apiVersion: v1
+kind: Service
+metadata:
+  name: devpilot-api
+  namespace: devpilot
+spec:
+  type: ClusterIP
+  selector:
+    app: devpilot-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

@@ -1,0 +1,57 @@
+# 示例清单，需按集群实际调整。
+# Worker 副本经 DOCKER_HOST 连接独立 Docker Host 运行 Sandbox。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devpilot-worker
+  namespace: devpilot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: devpilot-worker
+  template:
+    metadata:
+      labels:
+        app: devpilot-worker
+    spec:
+      containers:
+        - name: worker
+          image: devpilot-worker:latest # 占位，替换为真实镜像
+          command: ["python", "-m", "backend.src.worker"]
+          envFrom:
+            - configMapRef:
+                name: devpilot-config
+          env:
+            - name: DATABASE_PATH
+              value: /app/backend/data/devpilot.db
+            - name: WORKSPACE_ROOT
+              value: /workspace
+            # 租约与心跳参数：心跳间隔必须显著小于租约时长。
+            - name: TASK_WORKER_LEASE_SECONDS
+              value: "300"
+            - name: TASK_WORKER_HEARTBEAT_SECONDS
+              value: "30"
+            - name: TASK_WORKER_POLL_SECONDS
+              value: "1.0"
+            - name: TASK_MAX_ATTEMPTS
+              value: "3"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: devpilot-data # 占位，替换为真实 PVC
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: devpilot-workspace # 占位，替换为真实 PVC
