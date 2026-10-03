@@ -41,7 +41,7 @@ DevPilot 是一个面向真实代码仓库的 AI 软件工程平台。用户可�
 | 工具协议 | MCP Repository Server、MCP GitHub Client、本地受控写入工具 |
 | 安全执行 | Docker Sandbox、命令白名单、只读挂载、禁网与资源限制 |
 | 持久化 | SQLite、WAL、任务事件与 Tool Call Trace |
-| 评测 | 自建 9-case Benchmark、SWE-bench Lite、Bootstrap、Wilcoxon |
+| 评测 | 自建 12-case Benchmark、SWE-bench Lite、Bootstrap、Wilcoxon |
 | 部署 | Docker Compose、Nginx、Docker named volume |
 
 ### 1.3 可直接用于简历的项目描述
@@ -57,7 +57,7 @@ DevPilot 是一个面向真实代码仓库的 AI 软件工程平台。用户可�
 3. **权限与沙箱**：按角色暴露工具白名单，并在执行层二次校验；测试命令在禁网、只读挂载、512 MB 内存、1 CPU、128 进程上限的 Docker Sandbox 中执行。
 4. **Hybrid Code RAG**：实现代码结构化分块、384 维向量检索、BM25 与 RRF 融合；9 条标注查询达到 Recall@5 1.0、MRR 0.7222。
 5. **可靠任务执行**：将 Agent 执行从 SSE 连接中解耦，事件写入 SQLite；支持断线续传、取消、进程重启后的中断识别与显式恢复。
-6. **评测闭环**：构建 9 个独立 verifier 的合成任务，并引入 SWE-bench Lite 真实缺陷、基线/金补丁校准、测试文件保护和运行证据持久化。
+6. **评测闭环**：构建 12 个独立 verifier 的合成任务，并引入 SWE-bench Lite 真实缺陷、基线/金补丁校准、测试文件保护和运行证据持久化。
 7. **上下文成本优化**：保留原始 Issue 和最近完整回合，将旧工具历史压缩为结构化摘要；在同一长任务上 Token 从 131,182 降到 93,741，下降 28.5%。
 
 ### 1.4 面试时如何用一分钟介绍
@@ -498,7 +498,7 @@ Planner、Tester 和 Reviewer 分别映射到 `PlannerOutput`、`TesterOutput` �
 
 | 层次 | 回答的问题 | 数据 |
 |---|---|---|
-| 数据集审计 | 用例初始状态是否真的失败 | 9 个合成 fixture |
+| 数据集审计 | 用例初始状态是否真的失败 | 12 个合成 fixture |
 | 组件评测 | RAG 是否能检索到目标文件 | 9 条文件级标注查询 |
 | 端到端评测 | Agent 是否能真正修复缺陷 | 合成任务 + SWE-bench Lite |
 
@@ -515,7 +515,7 @@ Planner、Tester 和 Reviewer 分别映射到 `PlannerOutput`、`TesterOutput` �
 
 ### 7.3 合成回归
 
-9 个 fixture 覆盖 easy / medium / hard 各 3 个，类别包括 bugfix、configuration、cross-module、feature 和 validation。审计确认 9/9 初始测试失败。
+当前共有 12 个 fixture：9 个旧 Python 基础任务，以及 TypeScript、Java、Python 跨模块大型 Issue 各 1 个；类别包括 bugfix、configuration、cross-module、feature 和 validation。审计确认 12/12 初始 verifier 失败。下面的 18 次 A/B smoke 是扩容前 9 个旧 Python 任务的历史可比基线，不能误读为当前数据集只有 9 个任务。
 
 当前 smoke 共执行 18 次：
 
@@ -541,6 +541,27 @@ Planner、Tester 和 Reviewer 分别映射到 `PlannerOutput`、`TesterOutput` �
 ### 7.5 SWE-bench Lite 真实缺陷
 
 每个实例固定官方 base commit，在官方镜像中先验证错误基线失败、金补丁通过，再运行 Agent。候选测试改动不会进入 verifier。
+
+这里的“镜像”是 Docker 测试环境，不是实验结果或文档配图。可以把它理解成每道真实 Issue 配套的标准考场：镜像中封装了当时的 Python、依赖和测试工具；运行时临时创建容器，测试结束后删除容器但保留镜像。因为不同 Issue 的年代和依赖不同，不能直接用宿主机的一套环境统一判分。
+
+需要区分三个数字：
+
+| 名称 | 含义 | 是否进入成功率 |
+|---|---|---:|
+| 23 个候选实例 | 可以分层抽样的真实 Issue 题库 | 否 |
+| 本地已缓存镜像 | 已经下载好的标准测试环境 | 否 |
+| 已完成 Agent 运行 | 模型实际修改代码并由 verifier 判分 | 是 |
+
+单个实例的判分链路是：原始代码必须测试失败，官方金补丁必须测试通过，然后才让 Agent 在原始代码上修复；最终 verifier 会排除 Agent 对测试文件的修改，只对生产代码补丁重新运行官方目标测试。环境校准失败的实例不会调用模型，也不会进入分母。
+
+本机 Docker 中与 DevPilot 相关的镜像分为四类：
+
+| 镜像名称 | 用途 |
+|---|---|
+| `devpilot-sandbox:py312` | 日常 Python 任务的轻量隔离测试环境 |
+| `devpilot-sandbox:polyglot` | 合成 benchmark 的 TypeScript / Java 测试环境 |
+| `swebench/sweb.eval.x86_64.*` | 每道 SWE-bench 真实 Issue 的官方复现环境 |
+| `devpilot-backend`、`devpilot-frontend`、`github-mcp-server` | 运行产品本身或 GitHub MCP，并非评测样本 |
 
 ![SWE-bench Lite 真实缺陷对照实验](assets/real-world-evaluation.png)
 
@@ -709,7 +730,7 @@ DevPilot/
 │   │   ├── sandbox/      # Docker 隔离执行
 │   │   ├── services/     # 执行、发布、Trace 等业务服务
 │   │   └── tools/        # 文件、写入、测试和注册表
-│   ├── benchmarks/       # 9 个可执行 fixture
+│   ├── benchmarks/       # 12 个可执行 fixture
 │   └── tests/            # 单元、集成和评测测试
 ├── frontend/src/         # Vue 工作台和 Evaluation Dashboard
 ├── docs/                 # 实验与技术文档
@@ -808,7 +829,7 @@ Agent 在后台线程中执行，事件写入 SQLite；SSE 只是数据库事件
 - 真实缺陷报告：`backend/data/real_world_evals/<run_id>/report.json`
 
 ```powershell
-# 审计 9 个合成用例的初始失败状态
+# 审计 12 个合成用例的初始失败状态
 .venv\Scripts\python.exe -m backend.src.evals.audit
 
 # 运行文件级 RAG 评测
