@@ -54,6 +54,8 @@ def init_database() -> None:
     - task_sources：任务来源，例如 GitHub Issue 导入记录；
     - publish_previews：发布 PR 前给用户审批的预览草稿。
     - evaluation_results：第十四关 Evals 的逐次实验结果。
+    - task_queue：API/Worker 分离模式的持久化任务队列（租约+心跳+幂等）。
+    - agent_contexts：上下文断点恢复的 Agent 消息检查点。
     """
 
     with get_connection() as conn:
@@ -170,6 +172,48 @@ def init_database() -> None:
                 workspace_path TEXT NOT NULL,
                 error TEXT,
                 created_at TEXT NOT NULL
+            );
+
+            -- 10.2.5 API/Sandbox Worker 分离：持久化任务队列。
+            -- task_id 唯一约束 + idempotency_key 保证同一任务不会被重复入队；
+            -- 租约（lease_expires_at）+ 心跳（heartbeat_at）防止多 Worker
+            -- 重复执行或 Worker 崩溃后任务被永久占用。
+            CREATE TABLE IF NOT EXISTS task_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL UNIQUE,
+                idempotency_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                priority INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                claimed_by TEXT,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(task_id)
+                    REFERENCES tasks(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_queue_status
+            ON task_queue(status, priority, id);
+
+            -- 10.1 上下文断点恢复：按 (task_id, agent) 保存最新消息检查点，
+            -- 服务重启后 resume 可以从检查点恢复模型上下文而不是重跑 Agent。
+            CREATE TABLE IF NOT EXISTS agent_contexts (
+                task_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                messages_json TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                truncated INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (task_id, agent_name),
+                FOREIGN KEY(task_id)
+                    REFERENCES tasks(id)
+                    ON DELETE CASCADE
             );
 
             CREATE INDEX IF NOT EXISTS idx_evaluation_results_run_id

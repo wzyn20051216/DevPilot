@@ -1,4 +1,7 @@
 from collections.abc import Callable
+from typing import Any
+
+from openai.types.chat import ChatCompletionMessageParam
 
 from .base_tool_agent import BaseToolAgent
 
@@ -36,11 +39,15 @@ class TesterAgent(BaseToolAgent):
         self,
         repo_path: str,
         cancel_check: Callable[[], bool] | None = None,
+        checkpoint_callback: Callable[[str, list[dict[str, Any]]], None] | None = None,
+        initial_messages: list[ChatCompletionMessageParam] | None = None,
     ) -> None:
         """初始化 Tester agent。
 
         Args:
             repo_path: 待测试的代码仓库路径。
+            checkpoint_callback: 可选检查点钩子（断点恢复预埋）。
+            initial_messages: 可选起始消息（断点恢复预埋）。
         """
         super().__init__(
             repo_path=repo_path,
@@ -54,4 +61,6 @@ class TesterAgent(BaseToolAgent):
             },
             max_iterations=5,
             cancel_check=cancel_check,
+            checkpoint_callback=checkpoint_callback,
+            initial_messages=initial_messages,
         )

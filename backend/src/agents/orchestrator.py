@@ -5,6 +5,7 @@
 '''
 import json
 from collections.abc import Callable, Iterator
+from typing import Any
 
 from ..models.agent_state import (
     AgentEvent,
@@ -71,6 +72,8 @@ class DevPilotOrchestrator:
         max_repair_rounds: int = 2,
         enable_rag: bool = True,
         cancel_check: Callable[[], bool] | None = None,
+        checkpoint_callback: Callable[[str, list[dict[str, Any]]], None] | None = None,
+        initial_contexts: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         """初始化编排器，并实例化四个角色 agent。
 
@@ -79,26 +82,44 @@ class DevPilotOrchestrator:
             max_repair_rounds: 测试失败后允许 coder 返工的最大轮数，
                 超过仍失败则直接进入 reviewer（保护性上限，避免死循环）。
             enable_rag: 是否向 Planner/Coder/Reviewer 暴露 Hybrid RAG 工具。
+            checkpoint_callback: 可选检查点钩子（断点恢复预埋）。回调签名
+                (agent_name, messages)，由各 agent 在每轮迭代后调用；因为
+                context_store 已按 (task_id, agent_name) 复合键落盘，这里
+                一个回调即可覆盖全部四个角色。
+            initial_contexts: 可选恢复上下文，key 为 agent 名（"planner"/
+                "coder"/"tester"/"reviewer"），value 为待注入的起始消息列表。
         """
         self.repo_path = repo_path
         self.max_repair_rounds = max_repair_rounds
         self.enable_rag: bool = enable_rag
         self.cancel_check = cancel_check or (lambda: False)
+        initial_contexts = initial_contexts or {}
         self.planner = PlannerAgent(
             repo_path,
             enable_rag=enable_rag,
             cancel_check=self.cancel_check,
+            checkpoint_callback=checkpoint_callback,
+            initial_messages=initial_contexts.get("planner"),
         )
         self.coder = CodeAgent(
             repo_path,
             enable_rag=enable_rag,
             cancel_check=self.cancel_check,
+            checkpoint_callback=checkpoint_callback,
+            initial_messages=initial_contexts.get("coder"),
         )
-        self.tester = TesterAgent(repo_path, cancel_check=self.cancel_check)
+        self.tester = TesterAgent(
+            repo_path,
+            cancel_check=self.cancel_check,
+            checkpoint_callback=checkpoint_callback,
+            initial_messages=initial_contexts.get("tester"),
+        )
         self.reviewer = ReviewerAgent(
             repo_path,
             enable_rag=enable_rag,
             cancel_check=self.cancel_check,
+            checkpoint_callback=checkpoint_callback,
+            initial_messages=initial_contexts.get("reviewer"),
         )
 
     def _run_tester(self, question: str) -> tuple[list[AgentEvent], TesterOutput | None]:

@@ -1,4 +1,7 @@
 from collections.abc import Callable
+from typing import Any
+
+from openai.types.chat import ChatCompletionMessageParam
 
 from .base_tool_agent import BaseToolAgent
 
@@ -46,12 +49,16 @@ class PlannerAgent(BaseToolAgent):
         repo_path: str,
         enable_rag: bool = True,
         cancel_check: Callable[[], bool] | None = None,
+        checkpoint_callback: Callable[[str, list[dict[str, Any]]], None] | None = None,
+        initial_messages: list[ChatCompletionMessageParam] | None = None,
     ) -> None:
         """初始化 Planner agent。
 
         Args:
             repo_path: 待分析的代码仓库路径。
             enable_rag: 是否向 Planner 暴露 Hybrid RAG 检索工具。
+            checkpoint_callback: 可选检查点钩子（断点恢复预埋）。
+            initial_messages: 可选起始消息（断点恢复预埋）。
         """
         tools = {
             "list_files",
@@ -68,4 +75,6 @@ class PlannerAgent(BaseToolAgent):
             allowed_tools=tools,
             max_iterations=10,
             cancel_check=cancel_check,
+            checkpoint_callback=checkpoint_callback,
+            initial_messages=initial_messages,
         )
