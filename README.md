@@ -11,12 +11,16 @@ DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。�
 - 单 Agent 默认执行，以及 Planner / Coder / Tester / Reviewer 多智能体对照模式
 - 本地任务与 GitHub Issue 双入口
 - 计划审批和 GitHub 发布二次确认
-- Hybrid Code RAG、AST 分块、BM25 与向量检索
+- Hybrid Code RAG、AST 分块、BM25 与向量检索；支持按仓库规模与查询歧义动态启用（`RAG_MODE=auto`）
+- 运行时协议探针工具（`protocol_probe`）：引导模型在沙箱内验证迭代器、异常边界与兼容行为
+- 工具观测去重与摘要、Prompt Cache 命中统计，持续压低长任务 Token 成本
+- 上下文断点恢复：服务重启后 resume 优先恢复中断前的模型上下文，而不是重跑 Agent
 - MCP Repository / GitHub 工具发现与调用
 - Docker 隔离测试、角色工具权限和路径边界校验
+- 持久化任务队列与独立 Sandbox Worker（`TASK_QUEUE_BACKEND=sqlite|redis`，租约 / 心跳 / 幂等），支持 API 与执行分离部署
 - 后台执行、协作式取消、重启恢复、SSE 断线续传与 SQLite Trace
 - 彩色 Diff、测试报告、Review 结论和 Draft PR Preview
-- 四种 Agent 架构的 Benchmark、Ablation 和 Evaluation Dashboard
+- 四种 Agent 架构的 Benchmark、Ablation 和 Evaluation Dashboard，覆盖 TypeScript / Java 与跨文件大型 Issue
 
 ## Architecture
 
@@ -74,7 +78,7 @@ flowchart LR
 
 评测框架比较 `single_no_rag`、`single_rag`、`multi_no_rag` 和 `multi_rag` 四种 Variant，记录成功率、测试通过率、工具调用、迭代、耗时、Token 和修复轮数。Dashboard API 还提供难度分组、配对消融、Bootstrap 置信区间和 Wilcoxon 检验结果。
 
-当前数据集包含 9 个可执行 case，easy / medium / hard 各 3 个。提交前的自动审计会确认每个 fixture 文件完整且初始 verifier 必须失败，审计结果见 [`backend/benchmarks/audit_report.json`](backend/benchmarks/audit_report.json)。
+当前数据集包含 12 个可执行 case：9 个 Python 基础 case（easy / medium / hard 各 3 个），以及 3 个跨语言 / 跨文件 case（TypeScript、Java、Python 跨模块大型 Issue），用于验证 10.2.7 的跨语言能力。提交前的自动审计会确认每个 fixture 文件完整且初始 verifier 必须失败，审计结果见 [`backend/benchmarks/audit_report.json`](backend/benchmarks/audit_report.json)。TypeScript / Java 用例需要先构建 polyglot 沙箱镜像：`docker build --target polyglot -t devpilot-sandbox:polyglot -f backend/docker/sandbox.Dockerfile backend/docker`。
 
 项目还提供 3 个 SWE-bench Lite dev 真实缺陷的受控评测，以及文件级 RAG 检索评测。真实评测使用官方实例镜像、固定 base commit、基线/金补丁校准，并排除候选测试改动。当前实测结论与限制见 [`docs/current-evaluation.md`](docs/current-evaluation.md)。
 
@@ -154,6 +158,13 @@ docker compose up --build
 | `TOOL_OBSERVATION_MAX_CHARS` | 进入模型上下文的单次工具观测字符上限 | `10000` |
 | `AGENT_RECENT_MESSAGES` | 上下文压缩时完整保留的最近消息数 | `12` |
 | `AGENT_HISTORY_SUMMARY_MAX_CHARS` | 旧工具回合结构化摘要的字符上限 | `6000` |
+| `AGENT_DEDUPE_OBSERVATIONS` | 工具观测去重开关（同参数同结果 / 文件未变化只回传指针） | `true` |
+| `AGENT_CHECKPOINT_ENABLED` | 是否把 Agent 消息上下文持久化到 SQLite 供 resume 恢复 | `true` |
+| `RAG_MODE` | `manual` 保持显式 execution_mode；`auto` 按仓库规模与查询歧义动态启用 RAG | `manual` |
+| `TASK_QUEUE_BACKEND` | `inline` 进程内线程；`sqlite` / `redis` 交由独立 Worker 执行 | `inline` |
+| `REDIS_URL` | `TASK_QUEUE_BACKEND=redis` 时的连接地址 | empty |
+| `TASK_WORKER_LEASE_SECONDS` / `TASK_WORKER_HEARTBEAT_SECONDS` | Worker 租约时长与心跳续租间隔 | `300` / `30` |
+| `SANDBOX_IMAGE_POLYGLOT` | TypeScript / Java 用例使用的沙箱镜像 | `devpilot-sandbox:polyglot` |
 | `LLM_PROMPT_COST_PER_MILLION` | 每百万输入 Token 成本，仅用于评测估算 | `0` |
 | `LLM_COMPLETION_COST_PER_MILLION` | 每百万输出 Token 成本，仅用于评测估算 | `0` |
 | `MCP_TIMEOUT_SECONDS` | Repository MCP 调用超时秒数 | `30` |
@@ -206,7 +217,10 @@ DevPilot/
 
 ## Deployment Boundary
 
-当前 Compose 会把 `/var/run/docker.sock` 挂给 Backend，以便本地开发和毕业答辩演示中启动 Sandbox。这相当于给予 Backend 很高的宿主机权限，不应直接作为公网生产部署。生产方案应把 API 与 Sandbox Worker 分离，并使用独立 Docker Host、任务队列或 Firecracker 等更强隔离。
+默认 Compose 会把 `/var/run/docker.sock` 挂给 Backend 以便本地演示中启动 Sandbox，这相当于给予 Backend 很高的宿主机权限，不应直接作为公网生产部署。现在提供两种强化路径（详见 [`docs/deployment.md`](docs/deployment.md)）：
+
+- **API / Worker 分离**：`docker compose --profile worker up` 启动独立 Sandbox Worker（或设置 `TASK_QUEUE_BACKEND=sqlite|redis`），API 只入队，Worker 通过租约、心跳和幂等领取执行，支持多副本与崩溃自动重投。
+- **独立 Docker Host / K8s**：Worker 通过 `DOCKER_HOST` 连接独立 Docker daemon，API 不再持有 docker.sock；`deploy/kubernetes/` 提供 API + Worker 分离部署的示例清单，K8s Job 与 Firecracker 的演进路径同样见部署文档。
 
 ## License
 

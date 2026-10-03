@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import random
 import shutil
 import subprocess
 import urllib.parse
@@ -21,11 +22,46 @@ from ..tools.test_tool import run_tests
 from .dataset import PROJECT_ROOT
 from .runner import VARIANTS, collect_event_metrics, collect_timing, collect_usage
 
-DATASET_API = "https://datasets-server.huggingface.co/first-rows"
+# 使用 /rows 分页端点而非 first-rows：后者只返回首屏行，无法覆盖 dev split
+# 全部 23 个实例，会导致 --pool 无法选满 20 个分层样本。
+DATASET_API = "https://datasets-server.huggingface.co/rows"
 DEFAULT_INSTANCES = (
     "marshmallow-code__marshmallow-1359",
     "pydicom__pydicom-1139",
     "pylint-dev__astroid-1268",
+)
+# 从官方 datasets-server 拉取的 SWE-bench_Lite dev split 全部 23 个真实实例。
+# 保留 DEFAULT_INSTANCES 不变以兼容旧行为；本常量供 --pool 分层采样使用。
+REAL_INSTANCE_POOL: tuple[str, ...] = (
+    # marshmallow-code/marshmallow
+    "marshmallow-code__marshmallow-1343",
+    "marshmallow-code__marshmallow-1359",
+    # pvlib/pvlib-python
+    "pvlib__pvlib-python-1072",
+    "pvlib__pvlib-python-1154",
+    "pvlib__pvlib-python-1606",
+    "pvlib__pvlib-python-1707",
+    "pvlib__pvlib-python-1854",
+    # pydicom/pydicom
+    "pydicom__pydicom-1139",
+    "pydicom__pydicom-1256",
+    "pydicom__pydicom-1413",
+    "pydicom__pydicom-1694",
+    "pydicom__pydicom-901",
+    # pylint-dev/astroid
+    "pylint-dev__astroid-1196",
+    "pylint-dev__astroid-1268",
+    "pylint-dev__astroid-1333",
+    "pylint-dev__astroid-1866",
+    "pylint-dev__astroid-1978",
+    # pyvista/pyvista
+    "pyvista__pyvista-4315",
+    # sqlfluff/sqlfluff
+    "sqlfluff__sqlfluff-1517",
+    "sqlfluff__sqlfluff-1625",
+    "sqlfluff__sqlfluff-1733",
+    "sqlfluff__sqlfluff-1763",
+    "sqlfluff__sqlfluff-2419",
 )
 REAL_EVAL_ROOT = PROJECT_ROOT / "data" / "real_world_evals"
 REPOSITORY_CACHE_ROOT = PROJECT_ROOT / "data" / "repository_cache"
@@ -75,33 +111,95 @@ def _sandbox_profile(instance: SweBenchInstance) -> SandboxProfile:
 
 
 def load_swebench_lite_dev() -> dict[str, SweBenchInstance]:
-    """! @brief 从官方 Hugging Face 数据服务读取 Lite dev split。"""
-
-    query = urllib.parse.urlencode(
-        {
-            "dataset": "SWE-bench/SWE-bench_Lite",
-            "config": "default",
-            "split": "dev",
-        }
-    )
-    with urllib.request.urlopen(f"{DATASET_API}?{query}", timeout=30) as response:
-        payload = json.load(response)
+    """! @brief 从官方 Hugging Face 数据服务分页读取 Lite dev split 全部实例。"""
 
     instances: dict[str, SweBenchInstance] = {}
-    for wrapped in payload["rows"]:
-        row = wrapped["row"]
-        instance = SweBenchInstance(
-            instance_id=str(row["instance_id"]),
-            repo=str(row["repo"]),
-            base_commit=str(row["base_commit"]),
-            problem_statement=str(row["problem_statement"]),
-            gold_patch=str(row["patch"]),
-            test_patch=str(row["test_patch"]),
-            fail_to_pass=tuple(row.get("FAIL_TO_PASS") or ()),
-            pass_to_pass=tuple(row.get("PASS_TO_PASS") or ()),
+    offset = 0
+    length = 100
+    while True:
+        query = urllib.parse.urlencode(
+            {
+                "dataset": "SWE-bench/SWE-bench_Lite",
+                "config": "default",
+                "split": "dev",
+                "offset": offset,
+                "length": length,
+            }
         )
-        instances[instance.instance_id] = instance
+        with urllib.request.urlopen(f"{DATASET_API}?{query}", timeout=30) as response:
+            payload = json.load(response)
+
+        rows = payload.get("rows") or []
+        for wrapped in rows:
+            row = wrapped["row"]
+            instance = SweBenchInstance(
+                instance_id=str(row["instance_id"]),
+                repo=str(row["repo"]),
+                base_commit=str(row["base_commit"]),
+                problem_statement=str(row["problem_statement"]),
+                gold_patch=str(row["patch"]),
+                test_patch=str(row["test_patch"]),
+                fail_to_pass=tuple(row.get("FAIL_TO_PASS") or ()),
+                pass_to_pass=tuple(row.get("PASS_TO_PASS") or ()),
+            )
+            instances[instance.instance_id] = instance
+        total = payload.get("num_rows_total")
+        # 没有更多行，或已拉满官方声明的总行数时停止；total 缺失时退回仅按空行判断。
+        if not rows or (total is not None and len(instances) >= int(total)):
+            break
+        offset += length
     return instances
+
+
+def select_stratified_instances(
+    dataset: dict[str, SweBenchInstance],
+    count: int,
+    seed: int = 0,
+) -> list[str]:
+    """! @brief 按 repo 分层、组内确定性轮转，选取尽量多仓库的实例子集。
+
+    组间用 round-robin 轮流各取一个实例，确保小样本下每个 repo 都有机会被
+    覆盖；组内先按 instance_id 排序，再用 ``random.Random(seed)`` 偏移每组
+    的轮转起点，从而在可复现的前提下用不同 seed 得到不同组合。
+
+    @param dataset 以 instance_id 为键的完整实例字典。
+    @param count 期望选取的实例数，超过数据集规模时截断。
+    @param seed 组内起点偏移的随机种子，相同 seed 必得相同结果。
+    @return 恰好 ``min(count, len(dataset))`` 个 instance_id。
+    """
+
+    if count <= 0:
+        return []
+    # 先按 repo 分组并在组内排序，消除字典遍历顺序带来的非确定性。
+    grouped: dict[str, list[str]] = {}
+    for instance_id, instance in dataset.items():
+        grouped.setdefault(instance.repo, []).append(instance_id)
+    for ids in grouped.values():
+        ids.sort()
+
+    rng = random.Random(seed)
+    # 每组按 seed 决定的偏移量轮转队列，起点不同即得到不同采样组合。
+    queues: list[list[str]] = []
+    for repo in sorted(grouped):
+        ids = grouped[repo]
+        offset = rng.randrange(len(ids))
+        queues.append(ids[offset:] + ids[:offset])
+
+    limit = min(count, len(dataset))
+    selected: list[str] = []
+    while len(selected) < limit:
+        progressed = False
+        for queue in queues:
+            if len(selected) >= limit:
+                break
+            if not queue:
+                continue
+            selected.append(queue.pop(0))
+            progressed = True
+        # 所有组都被取空时退出，防止空转死循环。
+        if not progressed:
+            break
+    return selected
 
 
 def _run_git(arguments: list[str], cwd: Path | None = None, input_text: str | None = None) -> str:
@@ -145,8 +243,24 @@ def create_real_workspace(
         shutil.rmtree(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     cache = _cached_repository(instance)
-    _run_git(["clone", "--no-hardlinks", str(cache), str(destination)])
+    # --no-checkout：clone 不写工作树（默认分支的 checkout 是浪费的，紧接着
+    # 就要切到 base_commit）。对大仓库（pydicom 541 文件）省掉一次完整工作树
+    # 重写，把「clone + checkout」从 300 秒超时降到约 20 秒。
+    _run_git(["clone", "--no-hardlinks", "--no-checkout", str(cache), str(destination)])
     _run_git(["checkout", "--detach", instance.base_commit], cwd=destination)
+    # Git for Windows 2.55.x 的 checkout 在切换提交时存在竞态缺陷：index 已
+    # 更新，但部分工作树文件被静默漏写（git status 显示假性删除）。实测
+    # 2026-10-03 在 marshmallow-1359 的评测中，8 个小文件未落盘，导致候选
+    # 补丁携带伪删除 hunk、verifier 的 git apply 直接失败。reset --hard 强制
+    # 工作树与 index 对齐；随后校验必须完全干净，否则快速失败，避免烧掉
+    # 一次 LLM 运行后才发现工作区不完整。
+    _run_git(["reset", "--hard"], cwd=destination)
+    residual = _run_git(["status", "--porcelain"], cwd=destination).strip()
+    if residual:
+        raise RuntimeError(
+            "真实评测工作区在创建后不干净，已终止本次评测: "
+            + residual[:500]
+        )
     return destination
 
 
@@ -345,15 +459,32 @@ def _run_agent(instance: SweBenchInstance, variant: str, workspace: Path):
         )
 
 
+def _repeat_suffix(variant: str, repeat_index: int) -> str:
+    """! @brief 计算 variant 在指定重复轮次下的目录/文件名后缀。
+
+    第 1 轮沿用历史命名保持向后兼容，后续轮次追加 ``__r{n}`` 以避免
+    workspace、trace、patch 产物互相覆盖。
+    """
+
+    return variant if repeat_index == 1 else f"{variant}__r{repeat_index}"
+
+
 def evaluate_real_instance(
     instance: SweBenchInstance,
     variant: str,
     run_id: str,
     excluded_targets: tuple[str, ...] | list[str] = (),
+    repeat_index: int = 1,
 ) -> dict[str, Any]:
-    """! @brief 运行一组真实 Issue，并用隐藏测试补丁独立验收。"""
+    """! @brief 运行一组真实 Issue，并用隐藏测试补丁独立验收。
 
-    workspace = create_real_workspace(instance, run_id, variant)
+    @param repeat_index 同一 instance/variant 的重复实验序号；第 1 轮保持
+        原有命名，后续轮次在 workspace/trace/patch 名称上追加 ``__r{n}``
+        后缀，避免不同轮次互相覆盖工作区与证据文件。
+    """
+
+    suffix = _repeat_suffix(variant, repeat_index)
+    workspace = create_real_workspace(instance, run_id, suffix)
     started = perf_counter()
     events = []
     execution_exception: str | None = None
@@ -362,7 +493,7 @@ def evaluate_real_instance(
     except Exception as exc:  # noqa: BLE001
         execution_exception = f"{type(exc).__name__}: {exc}"
     elapsed = perf_counter() - started
-    trace_path = REAL_EVAL_ROOT / run_id / "traces" / f"{instance.instance_id}__{variant}.jsonl"
+    trace_path = REAL_EVAL_ROOT / run_id / "traces" / f"{instance.instance_id}__{suffix}.jsonl"
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     trace_path.write_text(
         "".join(
@@ -394,12 +525,12 @@ def evaluate_real_instance(
             instance,
             candidate_patch,
             run_id,
-            variant,
+            suffix,
             excluded_targets=excluded_targets,
         )
     except Exception as exc:  # noqa: BLE001
         verification_exception = f"Verifier {type(exc).__name__}: {exc}"
-    patch_path = REAL_EVAL_ROOT / run_id / "patches" / f"{instance.instance_id}__{variant}.patch"
+    patch_path = REAL_EVAL_ROOT / run_id / "patches" / f"{instance.instance_id}__{suffix}.patch"
     patch_path.parent.mkdir(parents=True, exist_ok=True)
     patch_path.write_text(candidate_patch, encoding="utf-8")
     tool_calls, iterations, repair_rounds = collect_event_metrics(events)
@@ -425,6 +556,7 @@ def evaluate_real_instance(
             + instance.instance_id.rsplit("-", 1)[-1]
         ),
         "variant": variant,
+        "repeat_index": repeat_index,
         "success": bool(verification["passed"]) and not event_errors,
         "tests_passed": bool(verification["passed"]),
         "elapsed_seconds": round(elapsed, 6),
@@ -447,12 +579,57 @@ def evaluate_real_instance(
     }
 
 
+def _build_repeat_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """! @brief 按 (instance_id, variant) 聚合重复运行的 mean/std。
+
+    只对 success 比例、total_tokens、elapsed_seconds 三项做描述统计，作为
+    report.json 顶层的纯加法键，不改动 rows 的逐条结构。
+    """
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault((row["instance_id"], row["variant"]), []).append(row)
+
+    def mean(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
+
+    def std(values: list[float]) -> float:
+        if len(values) < 2:
+            return 0.0
+        center = mean(values)
+        return (sum((value - center) ** 2 for value in values) / len(values)) ** 0.5
+
+    summary: dict[str, Any] = {}
+    for (instance_id, variant), group in grouped.items():
+        success_rate = [1.0 if row["success"] else 0.0 for row in group]
+        total_tokens = [float(row["total_tokens"]) for row in group]
+        elapsed_seconds = [float(row["elapsed_seconds"]) for row in group]
+        summary[f"{instance_id}__{variant}"] = {
+            "instance_id": instance_id,
+            "variant": variant,
+            "runs": len(group),
+            "success_rate": {"mean": mean(success_rate), "std": std(success_rate)},
+            "total_tokens": {"mean": mean(total_tokens), "std": std(total_tokens)},
+            "elapsed_seconds": {
+                "mean": mean(elapsed_seconds),
+                "std": std(elapsed_seconds),
+            },
+        }
+    return summary
+
+
 def run_real_world_evaluation(
     instance_ids: tuple[str, ...] = DEFAULT_INSTANCES,
     variants: tuple[str, ...] = ("single_no_rag", "single_rag"),
+    repeats: int = 1,
 ) -> Path:
-    """! @brief 审计并运行真实仓库实验矩阵，逐条持久化防止中断丢失。"""
+    """! @brief 审计并运行真实仓库实验矩阵，逐条持久化防止中断丢失。
 
+    @param repeats 每个 instance/variant 的独立重复次数，必须 >= 1。
+    """
+
+    if repeats < 1:
+        raise ValueError("repeats 必须 >= 1")
     unknown = set(variants).difference(VARIANTS)
     if unknown:
         raise ValueError("未知 variant: " + ", ".join(sorted(unknown)))
@@ -486,6 +663,8 @@ def run_real_world_evaluation(
                             settings.agent_history_summary_max_chars
                         ),
                     },
+                    "repeats": repeats,
+                    "summary": _build_repeat_summary(rows),
                     "audits": audits,
                     "rows": rows,
                 },
@@ -508,18 +687,20 @@ def run_real_world_evaluation(
     for instance in instances:
         audit = next(item for item in audits if item["instance_id"] == instance.instance_id)
         for variant in variants:
-            row = evaluate_real_instance(
-                instance,
-                variant,
-                run_id,
-                excluded_targets=audit["unstable_pass_to_pass"],
-            )
-            rows.append(row)
-            write_report("running")
-            print(
-                f"{instance.instance_id} {variant}: "
-                f"success={row['success']} tests={row['tests_passed']}"
-            )
+            for repeat_index in range(1, repeats + 1):
+                row = evaluate_real_instance(
+                    instance,
+                    variant,
+                    run_id,
+                    excluded_targets=audit["unstable_pass_to_pass"],
+                    repeat_index=repeat_index,
+                )
+                rows.append(row)
+                write_report("running")
+                print(
+                    f"{instance.instance_id} {variant} r{repeat_index}: "
+                    f"success={row['success']} tests={row['tests_passed']}"
+                )
     write_report("completed")
     return report_path
 
@@ -530,10 +711,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="运行 SWE-bench Lite dev 小规模真实评测")
     parser.add_argument("--instance", action="append", dest="instances")
     parser.add_argument("--variant", action="append", choices=VARIANTS)
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="每个 instance/variant 的重复次数，默认 1",
+    )
+    parser.add_argument(
+        "--pool",
+        type=int,
+        default=None,
+        help="从 dev split 分层选取 N 个实例；默认不传使用 DEFAULT_INSTANCES",
+    )
     args = parser.parse_args()
+    if args.pool is not None:
+        # --pool 显式传入时，从真实 dev split 分层采样，覆盖尽量多的仓库。
+        instance_ids = tuple(
+            select_stratified_instances(load_swebench_lite_dev(), args.pool)
+        )
+    else:
+        instance_ids = tuple(args.instances or DEFAULT_INSTANCES)
     output = run_real_world_evaluation(
-        instance_ids=tuple(args.instances or DEFAULT_INSTANCES),
+        instance_ids=instance_ids,
         variants=tuple(args.variant or ("single_no_rag", "single_rag")),
+        repeats=args.repeats,
     )
     print(output)
 

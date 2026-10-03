@@ -32,9 +32,12 @@ from backend.src.evals.dataset import (
 from backend.src.evals.metrics import summarize_results
 from backend.src.evals.models import BenchmarkCase, EvaluationResult, EvaluationVariant
 from backend.src.evals.real_world import (
+    SweBenchInstance,
     _candidate_paths,
     _failed_pytest_nodes,
     _protected_candidate_paths,
+    _repeat_suffix,
+    select_stratified_instances,
 )
 from backend.src.evals.retrieval import score_retrieval
 from backend.src.evals.runner import (
@@ -60,12 +63,17 @@ def test_load_add_bug_case() -> None:
 
 
 def test_dataset_covers_all_difficulty_levels() -> None:
-    """正式实验数据集应在三档难度上保持均衡。"""
+    """正式实验数据集应覆盖三档难度，且每档不少于初始 3 个用例。"""
 
     cases = load_benchmark_cases()
     assert {case.difficulty for case in cases} == {"easy", "medium", "hard"}
-    assert len(cases) == 9
-    assert all(sum(item.difficulty == level for item in cases) == 3 for level in ("easy", "medium", "hard"))
+    # 跨语言扩展（10.2.7）后用例总数从 9 增至 12，难度分布变为 3/5/4；
+    # 这里改为动态下限断言，新增 fixture 时无需再改本测试。
+    assert len(cases) == 12
+    assert all(
+        sum(item.difficulty == level for item in cases) >= 3
+        for level in ("easy", "medium", "hard")
+    )
     assert all(case.tags for case in cases)
     assert all(case.retrieval_queries for case in cases)
     assert len(calculate_dataset_fingerprint()) == 64
@@ -216,7 +224,7 @@ def test_all_benchmark_baselines_fail_before_agent_changes() -> None:
 
     report = build_audit_report(execute=True)
     assert report["valid"] is True
-    assert report["case_count"] == 9
+    assert report["case_count"] == len(load_benchmark_cases())
     assert all(row["baseline_failed"] is True for row in report["cases"])
 
 
@@ -490,7 +498,7 @@ def test_full_experiment_uses_one_run_id_and_saves_config(
     monkeypatch.setattr(runner, "evaluate_case", fake_evaluate_case)
 
     run_id = runner.run_full_experiment(repeats=2)
-    assert len(calls) == 9 * 4 * 2
+    assert len(calls) == len(load_benchmark_cases()) * len(VARIANTS) * 2
     assert {call[2] for call in calls} == {run_id}
     assert {call[3] for call in calls} == {1, 2}
     assert all(call[4] is True for call in calls)
@@ -498,7 +506,7 @@ def test_full_experiment_uses_one_run_id_and_saves_config(
     config_path = tmp_path / "experiments" / run_id / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert config["repeats"] == 2
-    assert config["benchmark_cases"] == 9
+    assert config["benchmark_cases"] == len(load_benchmark_cases())
     assert len(config["dataset_sha256"]) == 64
     assert config["random_seed"] == 42
     assert config["variants"] == list(VARIANTS)
@@ -537,7 +545,7 @@ def test_full_experiment_resume_skips_persisted_combinations(
     monkeypatch.setattr(runner, "evaluate_case", fake_evaluate_case)
 
     run_id = runner.run_full_experiment(repeats=1)
-    assert len(calls) == 9 * 4
+    assert len(calls) == len(load_benchmark_cases()) * len(VARIANTS)
 
     calls.clear()
     resumed_run_id = runner.run_full_experiment(repeats=1, run_id=run_id)
@@ -712,3 +720,155 @@ def test_repository_export_figures_and_summary_api(
     )
     assert ablation_response.status_code == 200
     assert len(ablation_response.json()) == 20
+
+
+def _fake_swebench_dataset(
+    num_repos: int = 6,
+    per_repo: int = 4,
+) -> dict[str, SweBenchInstance]:
+    """构造跨多个仓库、不触发网络/LLM/Docker 的假 dev split。"""
+
+    dataset: dict[str, SweBenchInstance] = {}
+    for repo_index in range(num_repos):
+        repo = f"org{repo_index}/proj{repo_index}"
+        for number in range(1, per_repo + 1):
+            instance_id = f"org{repo_index}__proj{repo_index}-{number}"
+            dataset[instance_id] = SweBenchInstance(
+                instance_id=instance_id,
+                repo=repo,
+                base_commit="abc123",
+                problem_statement="修复缺陷",
+                gold_patch="",
+                test_patch="",
+                fail_to_pass=("tests/test_bug.py::test_bug",),
+                pass_to_pass=(),
+            )
+    return dataset
+
+
+def test_repeat_suffix_keeps_first_and_suffixes_later() -> None:
+    """第 1 轮沿用历史命名，后续轮次追加 __r{n} 后缀。"""
+
+    assert _repeat_suffix("single_no_rag", 1) == "single_no_rag"
+    assert _repeat_suffix("single_no_rag", 2) == "single_no_rag__r2"
+    assert _repeat_suffix("multi_rag", 3) == "multi_rag__r3"
+
+
+def test_stratified_selection_is_deterministic_and_balanced() -> None:
+    """分层采样应可复现，并优先覆盖尽可能多的仓库。"""
+
+    dataset = _fake_swebench_dataset()
+
+    assert select_stratified_instances(dataset, 10, seed=7) == (
+        select_stratified_instances(dataset, 10, seed=7)
+    )
+
+    selected = select_stratified_instances(dataset, 10, seed=0)
+    assert len(selected) == 10
+    # 10 个实例来自 6 个仓库，round-robin 应覆盖全部仓库。
+    assert {dataset[iid].repo for iid in selected} == {
+        dataset[iid].repo for iid in dataset
+    }
+
+    # 选取数量少于仓库数时，前几个也应来自不同仓库。
+    few = select_stratified_instances(dataset, 3, seed=0)
+    assert len({dataset[iid].repo for iid in few}) == 3
+
+
+def test_stratified_selection_truncates_to_dataset_size() -> None:
+    """count 超过数据集规模时应截断为全部实例，count<=0 返回空列表。"""
+
+    dataset = _fake_swebench_dataset()
+    assert len(select_stratified_instances(dataset, 1000)) == len(dataset)
+    assert select_stratified_instances(dataset, 0) == []
+    assert select_stratified_instances(dataset, -1) == []
+
+
+def test_real_world_repeats_produce_indexed_rows_and_summary(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """repeats=2 应产出 repeat_index 1..2 的行，报告中含 repeats/summary。"""
+
+    from backend.src.evals import real_world
+
+    dataset = _fake_swebench_dataset()
+    instance_ids = select_stratified_instances(dataset, 2, seed=0)
+    monkeypatch.setattr(real_world, "REAL_EVAL_ROOT", tmp_path)
+    monkeypatch.setattr(real_world, "load_swebench_lite_dev", lambda: dataset)
+
+    def fake_audit(instance: SweBenchInstance, run_id: str) -> dict[str, object]:
+        return {
+            "instance_id": instance.instance_id,
+            "baseline_failed": True,
+            "unstable_pass_to_pass": [],
+        }
+
+    def fake_evaluate(
+        instance: SweBenchInstance,
+        variant: str,
+        run_id: str,
+        excluded_targets: tuple[str, ...] | list[str] = (),
+        repeat_index: int = 1,
+    ) -> dict[str, object]:
+        suffix = _repeat_suffix(variant, repeat_index)
+        return {
+            "instance_id": instance.instance_id,
+            "repo": instance.repo,
+            "variant": variant,
+            "repeat_index": repeat_index,
+            "success": True,
+            "tests_passed": True,
+            "elapsed_seconds": float(repeat_index),
+            "total_tokens": repeat_index * 100,
+            "patch_path": f"{suffix}.patch",
+            "trace_path": f"{suffix}.jsonl",
+        }
+
+    monkeypatch.setattr(real_world, "audit_real_instance", fake_audit)
+    monkeypatch.setattr(real_world, "evaluate_real_instance", fake_evaluate)
+
+    report_path = real_world.run_real_world_evaluation(
+        instance_ids=tuple(instance_ids),
+        variants=("single_no_rag",),
+        repeats=2,
+    )
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "completed"
+    assert payload["repeats"] == 2
+    assert {row["repeat_index"] for row in payload["rows"]} == {1, 2}
+    assert len(payload["rows"]) == 2 * len(instance_ids)
+
+    # 第 2 轮证据文件命名带 __r2，第 1 轮保持原命名。
+    for row in payload["rows"]:
+        if row["repeat_index"] == 2:
+            assert "__r2" in row["patch_path"]
+        else:
+            assert "__r2" not in row["patch_path"]
+
+    summary = payload["summary"]
+    assert len(summary) == len(instance_ids)
+    for entry in summary.values():
+        assert entry["runs"] == 2
+        assert set(entry["success_rate"]) == {"mean", "std"}
+        assert set(entry["total_tokens"]) == {"mean", "std"}
+        assert set(entry["elapsed_seconds"]) == {"mean", "std"}
+
+
+def test_real_world_rejects_invalid_repeats_and_variant() -> None:
+    """repeats 必须 >=1，未知 variant 应立即报错。"""
+
+    from backend.src.evals import real_world
+
+    with pytest.raises(ValueError, match="repeats"):
+        real_world.run_real_world_evaluation(
+            instance_ids=("owner__repo-1",),
+            variants=("single_no_rag",),
+            repeats=0,
+        )
+    with pytest.raises(ValueError, match="未知 variant"):
+        real_world.run_real_world_evaluation(
+            instance_ids=("owner__repo-1",),
+            variants=("bogus_variant",),
+        )

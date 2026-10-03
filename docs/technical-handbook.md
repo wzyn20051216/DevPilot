@@ -4,6 +4,10 @@
 
 🍦 **阅读建议**：第一次阅读按“一 → 四 → 五 → 七”的顺序建立全局认识；准备面试时重点阅读“一、六、七、十一”；需要复现项目时直接阅读“八”。
 
+![DevPilot AI 软件工程 Agent 平台](assets/devpilot-cover.png)
+
+*图 1：DevPilot 将仓库理解、计划、代码修改、隔离测试、审查与可追踪事件组织为一条受控工程链路。*
+
 ---
 
 ## 一、🎾 项目简介与简历写法
@@ -11,6 +15,10 @@
 ### 1.1 项目是什么
 
 DevPilot 是一个面向真实代码仓库的 AI 软件工程平台。用户可以输入本地开发任务，也可以导入 GitHub Issue；系统先分析仓库并生成计划，等待人工审批后，再由 Agent 调用代码检索、文件修改、测试和 Git Diff 等工具完成任务。
+
+![DevPilot 开发工作台真实界面](../output/playwright/level18-completed.png)
+
+*图 2：真实运行界面同时呈现计划、Agent Trace、测试结果、Diff、Review 与 Publish 入口。*
 
 项目解决的核心问题不是“让大模型聊天”，而是把不稳定的模型输出约束在一条可观察、可验证、可中断的工程流程中：
 
@@ -152,6 +160,10 @@ MCP 将“模型可调用的工具”抽象为可发现的协议服务。DevPilo
 
 普通 RAG 面向自然语言文档，Code RAG 还要保留文件、符号和行号信息。DevPilot 的索引流程是：
 
+![Hybrid Code RAG 双路检索与融合](assets/hybrid-code-rag.png)
+
+*图 3：仓库分块后分别进入向量检索与 BM25 词法检索，再由 RRF 融合并按文件去重。此图用于解释结构，下面的文字和公式是实现细节的准确依据。*
+
 ```text
 仓库文件
   → 忽略依赖、构建目录和二进制文件
@@ -251,6 +263,10 @@ DevPilot 的目标用户是希望观察和控制执行过程的开发者，典�
 ## 四、🐧 项目流程
 
 ### 4.1 本地任务主流程
+
+![DevPilot 任务全生命周期流程](assets/task-lifecycle.png)
+
+*图 4：流程图依据当前代码校对，覆盖计划审批、最多两轮测试返工、独立 Reviewer、SQLite 事件持久化、协作式取消、二次发布确认与 Snapshot Hash 门禁。*
 
 ```mermaid
 sequenceDiagram
@@ -526,6 +542,10 @@ Planner、Tester 和 Reviewer 分别映射到 `PlannerOutput`、`TesterOutput` �
 
 每个实例固定官方 base commit，在官方镜像中先验证错误基线失败、金补丁通过，再运行 Agent。候选测试改动不会进入 verifier。
 
+![SWE-bench Lite 真实缺陷对照实验](assets/real-world-evaluation.png)
+
+*图 5：同一组 3 个校准实例的描述性对照。每个实例、每种策略只运行一次，结果用于决定当前默认策略，不代表总体成功率。*
+
 | 实例 | 无 RAG | RAG | 观察 |
 |---|---:|---:|---|
 | `marshmallow-1359` | 通过 | 通过 | 两种策略均修复 root schema 选项引用 |
@@ -712,25 +732,34 @@ DevPilot/
 
 ## 十、🛡️ 当前边界与下一步
 
+> 2026-10-03 更新：10.1 列出的边界与 10.2 的七项改进已在一轮集中改进中逐项处理。以下保留原始问题陈述，并在每条后标注当前状态与对应实现位置。
+
 ### 10.1 当前边界
 
 - 真实无污染留出集只有 4 个实例，结论方差很大。
+  → **已缓解**：真实评测池覆盖 SWE-bench Lite dev split 全部 23 个真实实例，新增 `--pool N` 分层抽样（按 repo 轮询）与 `--repeats N` 同实例重复运行（`backend/src/evals/real_world.py`）。已用本地缓存的 7 个实例（跨 marshmallow/pydicom/astroid 三仓库）跑出成功率 4/7 ≈ 57.1% 的真实样本，成功与失败案例均如实记录在 `docs/current-evaluation.md`；扩到 20 实例需拉取其余仓库镜像并消耗额度，属于量化工作而非机制缺失。
 - 留出任务平均约 9.9 万 Token，成本仍然较高。
+  → **已缓解**：Agent 内核新增工具观测去重（同参数同结果 / 文件未变化只回传指针）、长观测摘要增强与 Prompt Cache 命中/未命中统计（`base_tool_agent.py`、`agent_state.py`）。实测对照见 `docs/current-evaluation.md`。
 - pydicom 失败暴露了历史协议和隐式兼容行为的推断弱点。
+  → **已缓解**：新增运行时协议探针工具 `protocol_probe`（沙箱内执行结构化 Python 探针，返回逐项通过/失败），并把「先探针观察、再修改、修复后重跑探针」固化进 Coder 与 Single Developer 提示词检查单，覆盖迭代器成套性、空迭代、迭代中业务异常、旧式 `next()` 兼容等边界。
 - SQLite + 进程内线程只适合单机演示和个人部署。
+  → **已缓解**：新增持久化任务队列与独立 Sandbox Worker：原子领取（单条 UPDATE + RETURNING）、租约、心跳续租、attempts 重试与死信、task_id 幂等，支持 SQLite 与 Redis 两种后端（`services/task_queue.py`、`worker.py`）。`TASK_QUEUE_BACKEND=inline`（默认）时行为与历史版本完全一致。
 - 恢复操作会重新运行 Agent，不会恢复中断前完整上下文。
+  → **已解决**：Agent 每轮把消息上下文检查点写入 SQLite（`agent_contexts` 表，按 `(task_id, agent_name)` 复合键），服务重启后 resume 优先从检查点恢复模型上下文继续执行，并产生可观测的恢复事件；无检查点时回退为按已批准计划重跑（`services/context_store.py`、`task_execution_service.py`）。单 Agent 与多 Agent（planner/coder/tester/reviewer 四角色各自独立恢复）均已覆盖。
 - 当前真实集主要是 Python，尚未证明跨语言能力。
+  → **部分缓解**：合成 benchmark 新增 TypeScript（跨文件）、Java（跨文件）、Python 跨模块大型 Issue 三个 case，polyglot 沙箱镜像支持 node/tsx 与 JDK 22（JEP 458 多文件源码启动）；真实 SWE-bench 集仍以 Python 为主，扩展 SWE-bench Multi 属于后续工作。
 - Docker Socket 直挂只适合本地环境。
+  → **已缓解**：Worker 分离后可经 `DOCKER_HOST` 连接独立 Docker daemon，API 不再持有 docker.sock；`deploy/kubernetes/` 提供 API + Worker 分离部署示例清单，K8s Job（一任务一 Job）与 Firecracker microVM 的演进路径见 `docs/deployment.md`。
 
 ### 10.2 优先级最高的改进
 
-1. 把真实评测扩展到至少 20 个分层实例，并对同一实例重复运行。
-2. 增加运行时协议探针，引导模型验证迭代器、异常边界和兼容行为。
-3. 按仓库规模和查询歧义动态启用 RAG，而不是全局开关。
-4. 引入 Prompt Cache、工具结果摘要和文件内容去重，进一步降低 Token。
-5. 将 API 和 Sandbox Worker 分离，使用 Redis/消息队列、租约、心跳和幂等任务。
-6. 使用独立 Docker Host、Kubernetes Job 或 Firecracker 强化生产隔离。
-7. 增加 TypeScript/Java 项目和跨文件大型 Issue。
+1. 把真实评测扩展到至少 20 个分层实例，并对同一实例重复运行。—— **已实现**（`--pool` / `--repeats` / 23 实例真实池），已跑 7 实例分层样本（成功率 4/7），完整 20 实例待拉取剩余镜像后执行。
+2. 增加运行时协议探针，引导模型验证迭代器、异常边界和兼容行为。—— **已实现**（`protocol_probe` 工具 + 提示词检查单）。
+3. 按仓库规模和查询歧义动态启用 RAG，而不是全局开关。—— **已实现**（`rag/policy.py` 四分支决策，`RAG_MODE=auto` 接入任务执行工厂）。
+4. 引入 Prompt Cache、工具结果摘要和文件内容去重，进一步降低 Token。—— **已实现**（观测去重 + 摘要 + cache hit/miss 统计进事件与指标）。
+5. 将 API 和 Sandbox Worker 分离，使用 Redis/消息队列、租约、心跳和幂等任务。—— **已实现**（SQLite/Redis 双后端队列 + 独立 Worker 进程）。
+6. 使用独立 Docker Host、Kubernetes Job 或 Firecracker 强化生产隔离。—— **已实现**（独立 Docker Host 支持 + K8s 清单；Firecracker 为演进方向）。
+7. 增加 TypeScript/Java 项目和跨文件大型 Issue。—— **已实现**（3 个新 fixture 已真实构建镜像验证初始失败与修复通过）。
 
 ---
 
