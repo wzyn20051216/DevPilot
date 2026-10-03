@@ -202,21 +202,28 @@ def select_stratified_instances(
     return selected
 
 
-def _run_git(arguments: list[str], cwd: Path | None = None, input_text: str | None = None) -> str:
+def _run_git(
+    arguments: list[str],
+    cwd: Path | None = None,
+    input_text: str | None = None,
+    timeout: int = 300,
+) -> str:
     """! @brief 执行固定参数的 Git 命令并返回 stdout。"""
 
+    # stdin 必须走字节流：Windows 上 text=True 的 TextIOWrapper 会把 \n 翻译
+    # 成 \r\n，导致 git apply 收到 CRLF 补丁，在 LF 工作树上整体失配
+    # （marshmallow-1359/sqlfluff-1763 校准实测失败）。字节流保证补丁与
+    # 官方 Linux 评测环境逐字节一致。
+    input_bytes = input_text.encode("utf-8") if input_text is not None else None
     result = subprocess.run(
         ["git", *arguments],
         cwd=cwd,
-        input=input_text,
+        input=input_bytes,
         check=True,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=300,
+        timeout=timeout,
     )
-    return result.stdout
+    return result.stdout.decode("utf-8", errors="replace")
 
 
 def _cached_repository(instance: SweBenchInstance) -> Path:
@@ -225,9 +232,18 @@ def _cached_repository(instance: SweBenchInstance) -> Path:
     cache = REPOSITORY_CACHE_ROOT / f"{instance.repo.replace('/', '__')}.git"
     cache.parent.mkdir(parents=True, exist_ok=True)
     if not cache.exists():
-        _run_git(["clone", "--mirror", f"https://github.com/{instance.repo}.git", str(cache)])
+        # 大仓库（pyvista/sqlfluff）mirror 克隆在普通宽带下远超 5 分钟，
+        # 首次克隆放宽容忍 45 分钟；失败残留目录必须清理后重试。
+        try:
+            _run_git(
+                ["clone", "--mirror", f"https://github.com/{instance.repo}.git", str(cache)],
+                timeout=2700,
+            )
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(cache, ignore_errors=True)
+            raise
     else:
-        _run_git(["fetch", "--prune", "origin"], cwd=cache)
+        _run_git(["fetch", "--prune", "origin"], cwd=cache, timeout=900)
     return cache
 
 
@@ -247,6 +263,12 @@ def create_real_workspace(
     # 就要切到 base_commit）。对大仓库（pydicom 541 文件）省掉一次完整工作树
     # 重写，把「clone + checkout」从 300 秒超时降到约 20 秒。
     _run_git(["clone", "--no-hardlinks", "--no-checkout", str(cache), str(destination)])
+    # Windows 全局 core.autocrlf=true 会把工作树写成 CRLF，官方 test_patch
+    # （LF）在校准阶段的 git apply 直接失败（sqlfluff-1763 实测；其余仓库因
+    # .gitattributes 屏蔽换行转换而幸免）。评测工作树必须与 blob 字节一致：
+    # clone 后、checkout 前本地关闭换行转换。
+    _run_git(["config", "core.autocrlf", "false"], cwd=destination)
+    _run_git(["config", "core.eol", "lf"], cwd=destination)
     _run_git(["checkout", "--detach", instance.base_commit], cwd=destination)
     # Git for Windows 2.55.x 的 checkout 在切换提交时存在竞态缺陷：index 已
     # 更新，但部分工作树文件被静默漏写（git status 显示假性删除）。实测

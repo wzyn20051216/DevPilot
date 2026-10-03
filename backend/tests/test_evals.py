@@ -872,3 +872,13 @@ def test_real_world_rejects_invalid_repeats_and_variant() -> None:
             instance_ids=("owner__repo-1",),
             variants=("bogus_variant",),
         )
+
+
+def test_real_git_stdin_preserves_utf8_and_lf(tmp_path):
+    """! @brief 用真实 Git 校验 WorkBuddy 字节 stdin 改动，不依赖 Docker/模型。"""
+    import hashlib
+    from backend.src.evals.real_world import _run_git
+    content = "补丁第一行\nsecond line\n"
+    payload = content.encode("utf-8")
+    expected = hashlib.sha1(f"blob {len(payload)}\0".encode() + payload).hexdigest()
+    assert _run_git(["hash-object", "--stdin"], cwd=tmp_path, input_text=content).strip() == expected
