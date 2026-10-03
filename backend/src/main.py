@@ -18,6 +18,7 @@ from .exceptions import DevPilotError, InvalidTaskStateError
 from .llm_client import chat_once
 from .logging_config import configure_logging
 from .config import settings
+from .rag.policy import decide_rag
 from .schemas import (
     AgentRunRequest,
     ChatRequest,
@@ -56,6 +57,20 @@ def _create_task_runner(task, cancel_check):
     """! @brief 按任务持久化的执行策略构造实际运行器。"""
 
     enable_rag = task.execution_mode in {"single_rag", "multi_rag"}
+    # 动态 RAG（技术手册 10.2.3）：仅在 auto 模式下对单 Agent 任务按仓库规模与
+    # 查询歧义重算 enable_rag。manual 模式保持与既有显式 execution_mode 语义完全一致。
+    if settings.rag_mode == "auto" and task.execution_mode.startswith("single_"):
+        decision = decide_rag(task.repo_path, task.question)
+        enable_rag = decision.enabled
+        logger.info(
+            "动态 RAG 决策: task={} enabled={} mode={} files={} signals={} reasons={}",
+            task.id,
+            decision.enabled,
+            decision.mode,
+            decision.metrics.get("source_files"),
+            decision.metrics.get("signals"),
+            decision.reasons,
+        )
     if task.execution_mode.startswith("single_"):
         return SingleAgentTaskRunner(
             repo_path=task.repo_path,
@@ -395,14 +410,46 @@ def create_task_plan(request:AgentRunRequest)->TaskPlanResponse:
 
     return TaskPlanResponse(task_id=task.id,plan=task.plan,status=task.status)
 
+def _enqueue_task_for_worker(task_id: str, task) -> StreamingResponse:
+    """! @brief 队列模式（10.2.5）：API 只入队，由独立 Sandbox Worker 领取执行。
+
+    任务状态保持 awaiting_approval，Worker 通过 claim_status 原子迁移到
+    running 后执行。task_id 唯一约束保证重复调用本端点不会重复执行；
+    对 done/dead 的历史队列记录用 reset 回收，支持失败后重新执行。
+    """
+    from .services.task_queue import get_task_queue
+
+    queue = get_task_queue()
+    idempotency_key = f"{task_id}:{task.status}"
+    if not queue.enqueue(task_id, idempotency_key=idempotency_key):
+        entry = queue.get(task_id)
+        entry_status = entry.status if entry else "unknown"
+        if entry_status not in {"queued", "claimed"} and not queue.reset(
+            task_id,
+            idempotency_key,
+        ):
+            raise InvalidTaskStateError(
+                f"当前任务无法入队执行：队列状态 {entry_status}",
+            )
+    return _task_event_stream(task_id, after_sequence=0)
+
+
 @app.post("/api/tasks/{task_id}/execute")
 def execute_task(task_id: str) -> StreamingResponse:
-    """! @brief 原子领取任务、后台执行，并流式观察持久化事件。"""
+    """! @brief 原子领取任务、后台执行，并流式观察持久化事件。
+
+    ``TASK_QUEUE_BACKEND=inline``（默认）时行为与历史版本完全一致；
+    配置为 sqlite/redis 时本端点只把任务写入持久化队列，执行由独立
+    Worker 进程完成（租约 + 心跳 + 幂等），SSE 仍然只读持久化事件。
+    """
 
     try:
         task = task_repository.get_task(task_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if settings.task_queue_backend != "inline":
+        return _enqueue_task_for_worker(task_id, task)
 
     if not task_repository.claim_status(
         task_id,
@@ -457,11 +504,21 @@ def cancel_task(task_id: str) -> dict[str, str]:
     """! @brief 请求协作式取消正在执行的任务。"""
 
     task = task_repository.get_task(task_id)
+    if settings.task_queue_backend != "inline" and task.status == "awaiting_approval":
+        # 队列模式下取消尚未被 Worker 领取的任务：移出队列并置 cancelled。
+        from .services.task_queue import get_task_queue
+
+        get_task_queue().remove(task_id)
+        if task_repository.claim_status(task_id, {"awaiting_approval"}, "cancelled"):
+            return {"task_id": task_id, "status": "cancelled"}
+        raise InvalidTaskStateError("任务状态已变化，请刷新后重试")
+    # 队列模式下 running 任务的取消：API 只标记 cancelling，Worker 的
+    # 取消轮询会消费该状态并触发其进程内的协作式取消（见 worker.py）。
     if task.status != "running":
         raise InvalidTaskStateError(f"当前任务状态无法取消：{task.status}")
     if not task_repository.claim_status(task_id, {"running"}, "cancelling"):
         raise InvalidTaskStateError("任务状态已变化，请刷新后重试")
-    if not task_execution_service.cancel(task_id):
+    if settings.task_queue_backend == "inline" and not task_execution_service.cancel(task_id):
         task_repository.claim_status(task_id, {"cancelling"}, "interrupted")
         raise InvalidTaskStateError("任务不在当前进程中运行，已标记为 interrupted")
     return {"task_id": task_id, "status": "cancelling"}
@@ -469,9 +526,19 @@ def cancel_task(task_id: str) -> dict[str, str]:
 
 @app.post("/api/tasks/{task_id}/resume")
 def resume_task(task_id: str) -> StreamingResponse:
-    """! @brief 从已持久化计划恢复服务重启时中断的任务。"""
+    """! @brief 恢复服务重启时中断的任务。
+
+    若存在上下文检查点，则从检查点恢复中断前的模型上下文继续执行；
+    否则从已持久化的批准计划重新运行 Agent。检查点注入由执行服务统一处理，
+    本端点只负责原子领取并流式观察，与 execute 走同一路径。
+    """
 
     _ = task_repository.get_task(task_id)
+    if settings.task_queue_backend != "inline":
+        # 队列模式：恢复执行交给 Worker（其 claim_status 接受 interrupted），
+        # 上下文检查点注入同样由 Worker 进程的执行服务统一处理。
+        task = task_repository.get_task(task_id)
+        return _enqueue_task_for_worker(task_id, task)
     if not task_repository.claim_status(task_id, {"interrupted"}, "running"):
         current = task_repository.get_task(task_id)
         raise InvalidTaskStateError(f"当前任务状态无法恢复：{current.status}")
