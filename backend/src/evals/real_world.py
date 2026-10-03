@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from ..agents.orchestrator import DevPilotOrchestrator
 from ..agents.single_developer_agent import SingleDeveloperAgent
+from ..config import settings
 from ..sandbox.docker_runner import SandboxProfile, use_sandbox_profile
 from ..tools.test_tool import run_tests
 from .dataset import PROJECT_ROOT
@@ -313,6 +314,18 @@ def audit_real_instance(instance: SweBenchInstance, run_id: str) -> dict[str, An
         "gold_passed": gold_passed,
         "gold_unexpected_failures": sorted(gold_unexpected),
         "targets": _verification_files(instance),
+        "baseline_result": {
+            "returncode": baseline.get("returncode"),
+            "timed_out": baseline.get("timed_out", False),
+            "stdout": str(baseline.get("stdout", ""))[-4_000:],
+            "stderr": str(baseline.get("stderr", ""))[-4_000:],
+        },
+        "gold_result": {
+            "returncode": gold.get("returncode"),
+            "timed_out": gold.get("timed_out", False),
+            "stdout": str(gold.get("stdout", ""))[-4_000:],
+            "stderr": str(gold.get("stderr", ""))[-4_000:],
+        },
     }
 
 
@@ -449,12 +462,49 @@ def run_real_world_evaluation(
     run_dir = REAL_EVAL_ROOT / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     audits = [audit_real_instance(instance, run_id) for instance in instances]
-    invalid = [audit["instance_id"] for audit in audits if not audit["baseline_failed"]]
-    if invalid:
-        raise RuntimeError("真实用例基线未失败: " + ", ".join(invalid))
-
     rows: list[dict[str, Any]] = []
     report_path = run_dir / "report.json"
+
+    def write_report(status: str) -> None:
+        """将当前审计和已完成行持久化为可诊断报告。"""
+
+        report_path.write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "dataset": "SWE-bench/SWE-bench_Lite:dev",
+                    "status": status,
+                    "model": settings.llm_model,
+                    "agent_config": {
+                        "token_budget": settings.agent_token_budget,
+                        "tool_observation_max_chars": (
+                            settings.tool_observation_max_chars
+                        ),
+                        "recent_messages": settings.agent_recent_messages,
+                        "history_summary_max_chars": (
+                            settings.agent_history_summary_max_chars
+                        ),
+                    },
+                    "audits": audits,
+                    "rows": rows,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    invalid = [audit["instance_id"] for audit in audits if not audit["baseline_failed"]]
+    if invalid:
+        write_report("invalid_environment")
+        raise RuntimeError(
+            "真实用例基线或金补丁校准失败: "
+            + ", ".join(invalid)
+            + f"；诊断报告: {report_path}"
+        )
+
+    write_report("running")
     for instance in instances:
         audit = next(item for item in audits if item["instance_id"] == instance.instance_id)
         for variant in variants:
@@ -465,24 +515,12 @@ def run_real_world_evaluation(
                 excluded_targets=audit["unstable_pass_to_pass"],
             )
             rows.append(row)
-            report_path.write_text(
-                json.dumps(
-                    {
-                        "run_id": run_id,
-                        "created_at": datetime.now(UTC).isoformat(),
-                        "dataset": "SWE-bench/SWE-bench_Lite:dev",
-                        "audits": audits,
-                        "rows": rows,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+            write_report("running")
             print(
                 f"{instance.instance_id} {variant}: "
                 f"success={row['success']} tests={row['tests_passed']}"
             )
+    write_report("completed")
     return report_path
 
 

@@ -159,6 +159,58 @@ def test_real_world_candidate_patch_includes_untracked_source(tmp_path: Path) ->
     assert "+VALUE = 2" in patch
 
 
+def test_real_world_invalid_environment_persists_diagnostics(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """金补丁也无法通过时，必须在调用 Agent 前留下可诊断报告。"""
+
+    from backend.src.evals import real_world
+
+    instance = real_world.SweBenchInstance(
+        instance_id="owner__repo-1",
+        repo="owner/repo",
+        base_commit="abc",
+        problem_statement="fix",
+        gold_patch="",
+        test_patch="",
+        fail_to_pass=("tests/test_bug.py::test_bug",),
+        pass_to_pass=(),
+    )
+    audit = {
+        "instance_id": instance.instance_id,
+        "baseline_failed": False,
+        "gold_passed": False,
+        "baseline_result": {"returncode": 4, "stderr": "import failed"},
+        "gold_result": {"returncode": 4, "stderr": "import failed"},
+    }
+    monkeypatch.setattr(real_world, "REAL_EVAL_ROOT", tmp_path)
+    monkeypatch.setattr(
+        real_world,
+        "load_swebench_lite_dev",
+        lambda: {instance.instance_id: instance},
+    )
+    monkeypatch.setattr(real_world, "audit_real_instance", lambda *_: audit)
+    monkeypatch.setattr(
+        real_world,
+        "evaluate_real_instance",
+        lambda *_args, **_kwargs: pytest.fail("无效环境不得调用 Agent"),
+    )
+
+    with pytest.raises(RuntimeError, match="诊断报告"):
+        real_world.run_real_world_evaluation(
+            instance_ids=(instance.instance_id,),
+            variants=("single_no_rag",),
+        )
+
+    reports = list(tmp_path.glob("*/report.json"))
+    assert len(reports) == 1
+    payload = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "invalid_environment"
+    assert payload["rows"] == []
+    assert payload["audits"][0]["gold_result"]["stderr"] == "import failed"
+
+
 def test_all_benchmark_baselines_fail_before_agent_changes() -> None:
     """每个错误版 fixture 的 verifier 都必须先失败，防止无效样本混入实验。"""
 
@@ -450,6 +502,8 @@ def test_full_experiment_uses_one_run_id_and_saves_config(
     assert len(config["dataset_sha256"]) == 64
     assert config["random_seed"] == 42
     assert config["variants"] == list(VARIANTS)
+    assert config["agent_recent_messages"] >= 4
+    assert config["tool_observation_max_chars"] >= 2_000
 
 
 def test_full_experiment_resume_skips_persisted_combinations(
