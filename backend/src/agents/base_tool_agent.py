@@ -1,5 +1,7 @@
 #把现有 CodeAgent 抽成基础 Agent
+import hashlib
 import json
+import re
 from collections.abc import Iterator
 from time import perf_counter
 from typing import Any, Callable
@@ -35,6 +37,8 @@ class BaseToolAgent:
         max_iterations: int = 8,
         edit_deadline: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        checkpoint_callback: Callable[[str, list[dict[str, Any]]], None] | None = None,
+        initial_messages: list[ChatCompletionMessageParam] | None = None,
     ) -> None:
         # 注意：不要再写成 self.xxx = xxx, (带逗号变 tuple)
         # 同时给 self 属性加显式注解，避免 Pyright 把 self.name
@@ -46,6 +50,10 @@ class BaseToolAgent:
         self.max_iterations: int = max_iterations
         self.edit_deadline = edit_deadline
         self.cancel_check = cancel_check or (lambda: False)
+        # 上下文断点恢复钩子：默认 None，现有子类零改动即可工作。
+        self.checkpoint_callback = checkpoint_callback
+        # 恢复执行时的起始消息：默认 None，走现状的 system+user 构建路径。
+        self.initial_messages = initial_messages
         self.client: Any = create_client()
 
     def _cancellation_event(self, state: AgentState) -> AgentEvent:
@@ -58,17 +66,25 @@ class BaseToolAgent:
             iteration=state.iteration,
             message=f"{self.name} 已停止：用户取消任务",
             data={
-                "usage": {
-                    "prompt_tokens": state.prompt_tokens,
-                    "completion_tokens": state.completion_tokens,
-                    "total_tokens": state.total_tokens,
-                },
+                "usage": self._usage_payload(state),
                 "timing": {
                     "llm_seconds": state.llm_seconds,
                     "tool_seconds": state.tool_seconds,
                 },
             },
         )
+
+    @staticmethod
+    def _usage_payload(state: AgentState) -> dict[str, Any]:
+        """! @brief 构造终止事件中的累计 usage 数据（含 Prompt Cache 命中统计）。"""
+
+        return {
+            "prompt_tokens": state.prompt_tokens,
+            "completion_tokens": state.completion_tokens,
+            "total_tokens": state.total_tokens,
+            "prompt_cache_hit_tokens": state.prompt_cache_hit_tokens,
+            "prompt_cache_miss_tokens": state.prompt_cache_miss_tokens,
+        }
 
     @staticmethod
     def _accumulate_usage(state: AgentState, response: Any) -> None:
@@ -80,6 +96,14 @@ class BaseToolAgent:
         state.prompt_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
         state.completion_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
         state.total_tokens += int(getattr(usage, "total_tokens", 0) or 0)
+        # DeepSeek 等供应商会在 usage 里带 Prompt Cache 命中/未命中 Token；
+        # 用 getattr 容错，不支持的网关保持 0。
+        state.prompt_cache_hit_tokens += int(
+            getattr(usage, "prompt_cache_hit_tokens", 0) or 0
+        )
+        state.prompt_cache_miss_tokens += int(
+            getattr(usage, "prompt_cache_miss_tokens", 0) or 0
+        )
 
     @staticmethod
     def _compact_history(
@@ -147,6 +171,72 @@ class BaseToolAgent:
         ]
         return compacted, True
 
+    @staticmethod
+    def _fold_blank_lines(text: str) -> str:
+        """! @brief 把连续 3 个及以上换行折叠为一个空行，压缩纯空白体积。"""
+
+        return re.sub(r"\n{3,}", "\n\n", text)
+
+    @staticmethod
+    def _dedupe_observation(
+        tool_name: str,
+        arguments: dict[str, Any],
+        result: Any,
+        observation: str,
+        iteration: int,
+        observation_cache: dict[str, tuple[int, str]],
+        read_file_hashes: dict[str, tuple[int, str]],
+    ) -> str:
+        """! @brief 对本次观测做去重，命中缓存时返回紧凑指针。
+
+        去重 key = 工具名 + 规范化参数，保证只有"同一操作"才可能命中；值保存
+        首次出现的轮次与观测原文。read_file 单独按文件内容 sha256 判定，因为
+        读文件的语义是"内容是否变化"，用哈希既省内存又能给出更明确的提示。
+        """
+
+        key = f"{tool_name}|{json.dumps(arguments, sort_keys=True, ensure_ascii=False)}"
+
+        if tool_name == "read_file":
+            # read_file 返回的是文件文本（str），直接对内容做哈希；其它形态
+            # 兜底用序列化后的观测文本，避免结构变化导致判空。
+            content = result if isinstance(result, str) else observation
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            previous = read_file_hashes.get(key)
+            if previous is not None and previous[1] == digest:
+                return (
+                    f"[观测去重] 文件内容未变化：与第 {previous[0]} 轮 read_file "
+                    f"结果一致（约 {len(observation)} 字符已省略）。"
+                )
+            read_file_hashes[key] = (iteration, digest)
+            return observation
+
+        previous = observation_cache.get(key)
+        if previous is not None and previous[1] == observation:
+            return (
+                f"[观测去重] 与第 {previous[0]} 轮工具 {tool_name} 的结果完全一致"
+                f"（约 {len(observation)} 字符已省略）。如需完整内容请用不同参数重新调用。"
+                f"\n\n{observation[:200]}"
+            )
+        observation_cache[key] = (iteration, observation)
+        return observation
+
+    def _emit_checkpoint(self, messages: list[ChatCompletionMessageParam]) -> None:
+        """! @brief 尝试调用检查点回调；任何异常都静默跳过。
+
+        检查点只是为"上下文断点恢复"预埋的观测钩子，绝不能打断 tool-calling
+        主循环，因此这里吞掉所有异常而不是向上传播。
+        """
+
+        if self.checkpoint_callback is None:
+            return
+        try:
+            # 通过 JSON 往返构造一个与主循环互不相干的深拷贝，防止回调方
+            # 修改消息对象污染后续 LLM 请求。
+            copies = json.loads(json.dumps(messages, ensure_ascii=False, default=str))
+            self.checkpoint_callback(self.name, copies)
+        except Exception:  # noqa: BLE001
+            pass
+
     def run_stream(self, question: str) -> Iterator[AgentEvent]:
         """流式执行 agent 的 tool-calling 循环，边跑边产出事件。
 
@@ -186,16 +276,26 @@ class BaseToolAgent:
         # -------------------------
         # 2. 构建 LLM 上下文
         # -------------------------
-        messages: list[ChatCompletionMessageParam] = [
-            {
-                "role": "system",
-                "content": self.system_prompt,
-            },
-            {
-                "role": "user",
-                "content": question,
-            },
-        ]
+        if self.initial_messages is not None:
+            # 断点恢复：以注入消息的副本为起点，保证首条 system、第二条 user
+            # 与保存时一致；后续追加的新消息不会改动调用方持有的原列表。
+            messages: list[ChatCompletionMessageParam] = list(self.initial_messages)
+        else:
+            messages = [
+                {
+                    "role": "system",
+                    "content": self.system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": question,
+                },
+            ]
+        # 本次运行内的观测去重缓存：key → (产生轮次, 观测原文/内容哈希)。
+        # 只作用于写回 LLM 的 observation，持久化追踪（state.tool_calls /
+        # SSE tool_result）不受影响。
+        observation_cache: dict[str, tuple[int, str]] = {}
+        read_file_hashes: dict[str, tuple[int, str]] = {}
         try:
             # 同一次 Agent 运行的工具 schema 不会变化。只发现一次可避免每轮
             # 重新启动 Repository MCP 子进程，也减少长任务中的固定延迟。
@@ -284,11 +384,7 @@ class BaseToolAgent:
                             f"{state.total_tokens}/{settings.agent_token_budget}"
                         ),
                         data={
-                            "usage": {
-                                "prompt_tokens": state.prompt_tokens,
-                                "completion_tokens": state.completion_tokens,
-                                "total_tokens": state.total_tokens,
-                            },
+                            "usage": self._usage_payload(state),
                             "timing": {
                                 "llm_seconds": state.llm_seconds,
                                 "tool_seconds": state.tool_seconds,
@@ -340,6 +436,7 @@ class BaseToolAgent:
                             ),
                         }
                     )
+                    self._emit_checkpoint(messages)
                     continue
 
                 # -------------------------
@@ -357,11 +454,7 @@ class BaseToolAgent:
                             "answer": state.answer,
                             "iteration": iteration,
                             "tool_calls": [item.model_dump() for item in state.tool_calls],
-                            "usage": {
-                                "prompt_tokens": state.prompt_tokens,
-                                "completion_tokens": state.completion_tokens,
-                                "total_tokens": state.total_tokens,
-                            },
+                            "usage": self._usage_payload(state),
                             "timing": {
                                 "llm_seconds": state.llm_seconds,
                                 "tool_seconds": state.tool_seconds,
@@ -502,13 +595,30 @@ class BaseToolAgent:
                     # 13. Observation 返回给 LLM
                     # -------------------------
                     observation = json.dumps(result, ensure_ascii=False, default=str)
+                    # 13.1 工具观测去重：相同工具+相同参数+相同结果时只给模型
+                    #      一个紧凑指针，避免把整段结果反复塞进上下文。
+                    if settings.agent_dedupe_observations:
+                        observation = self._dedupe_observation(
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            result=result,
+                            observation=observation,
+                            iteration=iteration,
+                            observation_cache=observation_cache,
+                            read_file_hashes=read_file_hashes,
+                        )
+                    # 13.2 长观测摘要：保留 head+tail 截断，截断前折叠连续空行
+                    #      并在标记中注明原始长度，让模型知道省略了多少内容。
                     if len(observation) > settings.tool_observation_max_chars:
+                        original_len = len(observation)
                         tail_chars = min(2_000, settings.tool_observation_max_chars // 4)
                         head_chars = settings.tool_observation_max_chars - tail_chars
+                        head = self._fold_blank_lines(observation[:head_chars])
+                        tail = self._fold_blank_lines(observation[-tail_chars:])
                         observation = (
-                            observation[:head_chars]
-                            + "\n...[工具结果已截断]...\n"
-                            + observation[-tail_chars:]
+                            head
+                            + f"\n...[工具结果已截断，原始 {original_len} 字符]...\n"
+                            + tail
                         )
                     messages.append(
                         {
@@ -529,6 +639,9 @@ class BaseToolAgent:
                         message="模型返回了当前 devpilot 不支持的工具类型",
                     )
                     return
+                # 本轮消息（assistant + tool observation）已全部追加完成，
+                # 进入下一轮前通知检查点钩子做断点持久化。
+                self._emit_checkpoint(messages)
             # -------------------------
             # 14. 达到最大迭代次数
             # -------------------------
@@ -569,11 +682,7 @@ class BaseToolAgent:
                         f"{state.total_tokens}/{settings.agent_token_budget}"
                     ),
                     data={
-                        "usage": {
-                            "prompt_tokens": state.prompt_tokens,
-                            "completion_tokens": state.completion_tokens,
-                            "total_tokens": state.total_tokens,
-                        },
+                        "usage": self._usage_payload(state),
                         "timing": {
                             "llm_seconds": state.llm_seconds,
                             "tool_seconds": state.tool_seconds,
@@ -594,11 +703,7 @@ class BaseToolAgent:
                         "tool_calls": [
                             item.model_dump() for item in state.tool_calls
                         ],
-                        "usage": {
-                            "prompt_tokens": state.prompt_tokens,
-                            "completion_tokens": state.completion_tokens,
-                            "total_tokens": state.total_tokens,
-                        },
+                        "usage": self._usage_payload(state),
                         "timing": {
                             "llm_seconds": state.llm_seconds,
                             "tool_seconds": state.tool_seconds,
@@ -618,11 +723,7 @@ class BaseToolAgent:
                     "answer": state.answer,
                     "iteration": state.iteration,
                     "tool_calls": [item.model_dump() for item in state.tool_calls],
-                    "usage": {
-                        "prompt_tokens": state.prompt_tokens,
-                        "completion_tokens": state.completion_tokens,
-                        "total_tokens": state.total_tokens,
-                    },
+                    "usage": self._usage_payload(state),
                     "timing": {
                         "llm_seconds": state.llm_seconds,
                         "tool_seconds": state.tool_seconds,
@@ -642,11 +743,7 @@ class BaseToolAgent:
                 iteration=state.iteration,
                 message=str(exc),
                 data={
-                    "usage": {
-                        "prompt_tokens": state.prompt_tokens,
-                        "completion_tokens": state.completion_tokens,
-                        "total_tokens": state.total_tokens,
-                    },
+                    "usage": self._usage_payload(state),
                     "timing": {
                         "llm_seconds": state.llm_seconds,
                         "tool_seconds": state.tool_seconds,

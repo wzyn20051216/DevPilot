@@ -1,4 +1,7 @@
 from collections.abc import Callable
+from typing import Any
+
+from openai.types.chat import ChatCompletionMessageParam
 
 from .base_tool_agent import BaseToolAgent
 
@@ -18,6 +21,8 @@ CODER_PROMPT = """
 6. 不要声称测试通过，测试由 Tester Agent 完成。
 7. 大文件先 search_code 定位，再用 read_file 的 start_line/end_line 读取局部，
    优先用 replace_in_file 做唯一锚点替换，避免重写整个文件。
+8. 修复迭代器/字符串/序列化等运行时协议问题时，先用 protocol_probe 工具在沙箱
+   观察真实行为，修复后重跑同一探针确认。
 """
 
 
@@ -30,6 +35,8 @@ class CodeAgent(BaseToolAgent):
         max_iterations: int = 8,
         enable_rag: bool = True,
         cancel_check: Callable[[], bool] | None = None,
+        checkpoint_callback: Callable[[str, list[dict[str, Any]]], None] | None = None,
+        initial_messages: list[ChatCompletionMessageParam] | None = None,
     ) -> None:
         """初始化 Coder agent。
 
@@ -37,6 +44,8 @@ class CodeAgent(BaseToolAgent):
             repo_path: 待操作的代码仓库路径。
             max_iterations: 单次任务的 tool-calling 最大迭代轮数。
             enable_rag: 是否向 Coder 暴露 Hybrid RAG 检索工具。
+            checkpoint_callback: 可选检查点钩子（断点恢复预埋）。
+            initial_messages: 可选起始消息（断点恢复预埋）。
         """
         tools = {
             "list_files",
@@ -45,6 +54,7 @@ class CodeAgent(BaseToolAgent):
             "write_file",
             "replace_in_file",
             "git_diff",
+            "protocol_probe",
         }
         if enable_rag:
             tools.add("retrieve_code")
@@ -58,4 +68,6 @@ class CodeAgent(BaseToolAgent):
             allowed_tools=tools,
             max_iterations=max_iterations,
             cancel_check=cancel_check,
+            checkpoint_callback=checkpoint_callback,
+            initial_messages=initial_messages,
         )

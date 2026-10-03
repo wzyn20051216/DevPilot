@@ -13,6 +13,7 @@ from ..mcp_clients.repository_client import (
     list_repository_tools_sync,
 )
 from .command_tool import run_command
+from .protocol_probe import probe_runtime
 from .test_tool import run_tests as run_test
 from .write_tool import replace_in_file, write_file
 
@@ -135,11 +136,53 @@ RUN_COMMAND_DEFINITION: ChatCompletionFunctionToolParam = {
 }
 
 
+PROTOCOL_PROBE_DEFINITION: ChatCompletionFunctionToolParam = {
+    "type": "function",
+    "function": {
+        "name": "protocol_probe",
+        "description": (
+            "在隔离沙箱运行运行时协议探针，观察迭代器/异常边界/字符串/序列化/"
+            "类型行为。修复隐含协议问题前先观察，修复后重跑确认；返回逐项 ok 与 all_passed。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "probes": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "description": (
+                        "探针列表，每项含 name（名称）、code（Python 源码）、"
+                        "expect_exception（可选，期望抛出的异常类型或消息子串）"
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "code": {"type": "string"},
+                            "expect_exception": {
+                                "type": ["string", "null"],
+                            },
+                        },
+                        "required": ["name", "code"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": [
+                "probes",
+            ],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 LOCAL_TOOL_DEFINITIONS: list[ChatCompletionFunctionToolParam] = [
     WRITE_FILE_DEFINITION,
     REPLACE_IN_FILE_DEFINITION,
     RUN_TEST_DEFINITION,
     RUN_COMMAND_DEFINITION,
+    PROTOCOL_PROBE_DEFINITION,
 ]
 
 
@@ -249,6 +292,12 @@ def execute_tool(
         return run_command(
             repo_path=repo_path,
             argv=arguments["argv"],
+        )
+
+    if tool_name == "protocol_probe":
+        return probe_runtime(
+            repo_path=repo_path,
+            probes=arguments["probes"],
         )
 
     raise ValueError(

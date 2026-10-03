@@ -178,6 +178,10 @@ class AgentState(BaseModel):
     prompt_tokens: int = Field(default=0, ge=0, description="累计输入 Token 数")
     completion_tokens: int = Field(default=0, ge=0, description="累计输出 Token 数")
     total_tokens: int = Field(default=0, ge=0, description="累计总 Token 数")
+    # Prompt Cache 命中/未命中 Token 数（DeepSeek 等供应商会在 usage 中返回）。
+    # 供应商不支持时保持 0，不影响既有用量统计。
+    prompt_cache_hit_tokens: int = Field(default=0, ge=0, description="累计 Prompt Cache 命中 Token 数")
+    prompt_cache_miss_tokens: int = Field(default=0, ge=0, description="累计 Prompt Cache 未命中 Token 数")
     llm_seconds: float = Field(default=0.0, ge=0, description="累计模型请求耗时")
     tool_seconds: float = Field(default=0.0, ge=0, description="累计工具执行耗时")
     # 注意：tests_passed 已被 test_report.passed 取代，此处保留仅为兼容旧引用，

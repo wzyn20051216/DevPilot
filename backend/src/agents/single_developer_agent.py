@@ -5,6 +5,9 @@ SingleDeveloperAgent 独立承担分析、修改和测试，用于和现有多�
 """
 
 from collections.abc import Callable
+from typing import Any
+
+from openai.types.chat import ChatCompletionMessageParam
 
 from .base_tool_agent import BaseToolAgent
 
@@ -32,21 +35,14 @@ start_line/end_line 读取局部上下文，并优先用 replace_in_file 做唯�
 - 保留最后 5 轮运行测试、查看 diff，并根据真实失败继续修复。
 若信息已经足够，提前修改和测试，不要为了写长篇分析耗尽工具轮次。
 
-修复包装器、容器或代理对象引起的属性错误时，要保持原有语义沿对象关系传播。
-先检查项目是否已有 root、owner、parent 等解析真实所属对象的机制；不要只用
-getattr(..., None) 吞掉异常并回退默认值，因为这可能让基础测试通过却丢失配置。
-当修复字符串表示、序列化、类型或运行时协议时，优先用 run_command 的
-python -c 在隔离沙箱观察相关对象已有的 str/repr/属性行为，再决定返回值；
-不要凭名称猜测项目约定。
-Issue 若给出最小复现代码、输入值、异常类型或作用域，必须原样运行该场景。
-不要为了方便把“未定义名称”换成“已导入对象”，也不要替换输入或补充原题
-没有的初始化，因为这些变化可能进入不同代码路径。修复后再次运行同一复现。
-实现 Python 数据模型协议时要检查协议是否需要成套方法以及兼容行为，例如
-可迭代对象与迭代器的 __iter__/__next__ 区别、成员判断、重复迭代和异常类型；
-用 python -c 覆盖这些边界，避免只验证最常见路径。
-处理生成器、惰性推断或迭代 API 时，要分别验证“正常产出”“空迭代”和
-“迭代过程中抛异常”。next(generator, default) 只处理 StopIteration，不会吞掉
-生成器内部的业务异常；应按项目既有异常边界显式处理。
+修复属性错误、字符串/序列化/类型或数据模型协议前，先执行「运行时验证协议」
+（用 protocol_probe 在沙箱观察真实行为，不凭名称猜约定）：
+1. Issue 给了复现代码/输入/异常必须原样运行该场景，不改名、不换输入、不补初始化。
+2. 迭代器/生成器修复必须探针覆盖：正常产出、空迭代、迭代中抛业务异常、
+   __iter__/__next__ 成套、重复迭代、旧式 next() 兼容；next(g, default) 只吞 StopIteration。
+3. 字符串/序列化/类型行为先探针观察 str/repr/属性再改；语义沿对象关系传播
+   （先查 root/owner/parent 等解析机制），不要 getattr(..., None) 吞异常丢配置。
+4. 修复后重跑同一探针确认，再进入 run_test。
 """
 
 
@@ -59,12 +55,16 @@ class SingleDeveloperAgent(BaseToolAgent):
         enable_rag: bool,
         max_iterations: int = 14,
         cancel_check: Callable[[], bool] | None = None,
+        checkpoint_callback: Callable[[str, list[dict[str, Any]]], None] | None = None,
+        initial_messages: list[ChatCompletionMessageParam] | None = None,
     ) -> None:
         """! @brief 初始化单 Agent 实验实例。
 
         @param repo_path 本次实验的独立 Workspace。
         @param enable_rag 是否允许调用 retrieve_code。
         @param max_iterations 最大 LLM 工具调用轮数。
+        @param checkpoint_callback 可选检查点钩子（断点恢复预埋）。
+        @param initial_messages 可选起始消息（断点恢复预埋）。
         """
 
         tools = {
@@ -76,6 +76,7 @@ class SingleDeveloperAgent(BaseToolAgent):
             "git_diff",
             "run_test",
             "run_command",
+            "protocol_probe",
         }
         if enable_rag:
             tools.add("retrieve_code")
@@ -88,4 +89,6 @@ class SingleDeveloperAgent(BaseToolAgent):
             max_iterations=max_iterations,
             edit_deadline=9,
             cancel_check=cancel_check,
+            checkpoint_callback=checkpoint_callback,
+            initial_messages=initial_messages,
         )

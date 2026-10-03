@@ -158,6 +158,26 @@ def collect_usage(events: Iterable[AgentEvent]) -> tuple[int, int, int]:
     return prompt_tokens, completion_tokens, total_tokens
 
 
+def collect_cache_usage(events: Iterable[AgentEvent]) -> tuple[int, int]:
+    """! @brief 汇总各 Agent 终止事件中的 Prompt Cache 命中/未命中 Token。
+
+    与 collect_usage 相同，只读取 final/error/cancelled 终止事件里带出的累计值，
+    避免把同一个 Agent 的多轮累计重复相加。供应商不支持该字段时保持 0。
+    """
+
+    hit_tokens = 0
+    miss_tokens = 0
+    for event in events:
+        if event.type not in {"final", "error", "cancelled"}:
+            continue
+        usage = event.data.get("usage") if isinstance(event.data, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        hit_tokens += int(usage.get("prompt_cache_hit_tokens", 0) or 0)
+        miss_tokens += int(usage.get("prompt_cache_miss_tokens", 0) or 0)
+    return hit_tokens, miss_tokens
+
+
 def collect_timing(events: Iterable[AgentEvent]) -> tuple[float, float]:
     """! @brief 汇总各 Agent 终止事件中的模型与工具耗时。"""
 
@@ -272,6 +292,7 @@ def verify_case(case: BenchmarkCase, workspace: Path) -> dict[str, Any]:
         repo_path=str(verification_workspace),
         target=case.verification_target,
         timeout=case.timeout_seconds,
+        command=case.verification_command,
     )
 
 
