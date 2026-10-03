@@ -2,6 +2,8 @@
 
 DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。它将 Planner、Coder、Tester 和 Reviewer 串成带人工审批的研发流程，并通过 Hybrid Code RAG、MCP、Docker Sandbox、SQLite Tracing 和评测框架提供可观测、可复现的执行过程。
 
+系统化学习项目设计、核心实现与实验结论，请阅读 [`docs/technical-handbook.md`](docs/technical-handbook.md)。
+
 ![DevPilot 工作台](output/playwright/level18-completed.png)
 
 ## Features
