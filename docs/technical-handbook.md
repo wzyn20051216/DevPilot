@@ -603,13 +603,15 @@ Planner、Tester 和 Reviewer 分别映射到 `PlannerOutput`、`TesterOutput` �
 
 失败样本显示：模型会用不同作用域的对象替代 Issue 原始复现，并误判生成器异常边界。这类失败比成功案例更有价值，因为它直接指向运行时探针和协议兼容检查能力的缺口。
 
+**后续真实结果（2026-10-04）**：分层抽样 20 题，9 题未通过校准；通过校准的 11 题各运行 3 次，共 21/33 次通过本项目文件级 verifier，按题为 7/11。四个失败题各 0/3。针对失败题增加轮数、改用 DeepSeek Pro 和高强度思考的单次探索均未观察到通过率提升；执行层“编辑阶段仍可运行搜索工具”的漏洞虽已修复，astroid-1333 同题重跑仍未通过。完整配置、run_id、Token 与失败点见[当前评测记录](current-evaluation.md)。这些数据来自自研 verifier，不能与官方 SWE-bench 榜单直接比较。
+
 ### 7.7 如何正确表达实验结论
 
 可以说：
 
 - “在 9 个合成回归任务中，单 Agent 两种模式均通过独立 verifier。”
 - “文件级 RAG 在 9 条标注查询上 Recall@5 为 1.0。”
-- “当前 3 个真实缺陷的小样本中，无 RAG 表现更好，因此作为默认策略。”
+- “首轮 3 个真实缺陷中，无 RAG 通过 2/3、RAG 通过 1/3，因此暂用无 RAG 为默认；后续需同题配对验证。”
 
 不应说：
 
@@ -682,6 +684,7 @@ Compose 为了在本地演示中启动 Sandbox，会把 Docker Socket 挂载到 
 | `LLM_API_KEY` | 模型密钥 | 空 |
 | `LLM_BASE_URL` | OpenAI-compatible 地址 | 空 |
 | `LLM_MODEL` | 模型名称 | 空 |
+| `LLM_REASONING_EFFORT` | DeepSeek 思考强度 `low` / `high` / `max`；留空沿用接口默认行为 | 空 |
 | `LLM_TIMEOUT_SECONDS` | 单次模型请求超时 | 60 |
 | `LLM_MAX_RETRIES` | 瞬时错误重试 | 2 |
 | `AGENT_TOKEN_BUDGET` | 单 Agent Token 上限，0 为不限制 | 0 |

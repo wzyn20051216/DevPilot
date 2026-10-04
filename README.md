@@ -159,6 +159,7 @@ docker compose up --build
 | `LLM_API_KEY` | OpenAI-compatible API Key | empty |
 | `LLM_BASE_URL` | OpenAI-compatible endpoint | empty |
 | `LLM_MODEL` | 模型名称 | empty |
+| `LLM_REASONING_EFFORT` | DeepSeek 思考强度 `low` / `high` / `max`；留空沿用接口默认行为 | empty |
 | `LLM_TIMEOUT_SECONDS` | 单次 LLM 请求超时秒数 | `60` |
 | `LLM_MAX_RETRIES` | LLM 瞬时故障最大重试次数 | `2` |
 | `AGENT_TOKEN_BUDGET` | 单 Agent 累计 Token 上限；`0` 表示不限制 | `0` |

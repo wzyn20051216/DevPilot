@@ -1,0 +1,7 @@
+run_id,instance_id,model,reasoning_effort_requested,experiment,success,iterations,total_tokens,elapsed_seconds,patch_bytes,error,unexpected_failure
+6b4db8ac075e4506ab72f0c3cec0250a,pydicom__pydicom-1139,deepseek-v4-flash,,24_rounds_and_prompt,False,24,239954,133.580366,599,,pydicom/tests/test_valuerep.py::TestPersonName::test_next
+b34d4174a76c47d9999e47aedfa35cef,pylint-dev__astroid-1333,deepseek-v4-flash,,24_rounds_and_prompt,False,24,392776,294.402023,856,,tests/unittest_modutils.py::ModPathFromFileTest::test_load_packages_without_init
+d050f6eef8784d27b87dd8932d3503d5,pydicom__pydicom-1139,deepseek-v4-pro,,24_round_cap,False,13,99841,62.922046,457,,pydicom/tests/test_valuerep.py::TestPersonName::test_next
+50901173c3a947fbb04828ca44f50846,pydicom__pydicom-1139,deepseek-v4-pro,max,14_rounds,False,14,163371,145.287841,1075,,pydicom/tests/test_valuerep.py::TestPersonName::test_next
+23ff3477eb884bb5ab88eb392734e2b5,pylint-dev__astroid-1333,deepseek-v4-pro,max,14_rounds_before_gate,False,14,163272,347.062917,0,Agent 未生成候选补丁,tests/unittest_modutils.py::ModPathFromFileTest::test_load_packages_without_init
+065d3e301db846dd8effeeba84cfc47f,pylint-dev__astroid-1333,deepseek-v4-pro,max,14_rounds_after_gate,False,14,449610,639.462959,411,,tests/unittest_modutils.py::ModPathFromFileTest::test_load_packages_without_init
