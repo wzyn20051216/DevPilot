@@ -19,3 +19,7 @@ backend/data/logs/
 
 # Benchmark fixture 的本地 Git 历史仅用于迁移备份，不随主仓库发布。
 backend/benchmarks/repos/**/.git-local-backup/
+
+# 工作目录的项目数据（工作记忆、临时脚本），不随主仓库发布。
+.workbuddy/
+.pytest_tmp/
