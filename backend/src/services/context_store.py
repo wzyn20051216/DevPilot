@@ -14,7 +14,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from ..database.connection import get_connection
+from ..database.connection import get_connection, upsert_sql
 
 
 def _now_iso() -> str:
@@ -100,29 +100,25 @@ def save_context(
 
     with get_connection() as conn:
         conn.execute(
-            """
-            INSERT INTO agent_contexts (
-                task_id,
-                agent_name,
-                messages_json,
-                message_count,
-                total_tokens,
-                truncated,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, 0, ?, ?)
-            ON CONFLICT(task_id, agent_name) DO UPDATE SET
-                messages_json = excluded.messages_json,
-                message_count = excluded.message_count,
-                total_tokens = excluded.total_tokens,
-                truncated = excluded.truncated,
-                updated_at = excluded.updated_at
-            """,
+            upsert_sql(
+                "agent_contexts",
+                ("task_id", "agent_name"),
+                (
+                    "task_id",
+                    "agent_name",
+                    "messages_json",
+                    "message_count",
+                    "total_tokens",
+                    "truncated",
+                    "updated_at",
+                ),
+            ),
             (
                 task_id,
                 agent_name,
                 payload,
                 len(stored),
+                0,
                 truncated,
                 now,
             ),

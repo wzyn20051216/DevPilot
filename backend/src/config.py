@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import ClassVar, Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +103,14 @@ class Settings(BaseSettings):
         le=1,
         description="Python 文件占源码文件的最小比例，低于该值不启用 code_outline",
     )
+    strategy_guarded_max_iterations: int = Field(
+        default=16,
+        ge=10,
+        description=(
+            "启用工作流门禁后的最大工具轮数；额外轮次用于修改前复现、"
+            "候选比较、修改后复验与目标测试"
+        ),
+    )
 
     # --- Agent 上下文断点恢复（技术手册 10.1）---
     agent_checkpoint_enabled: bool = Field(
@@ -144,8 +152,42 @@ class Settings(BaseSettings):
         ge=1,
         description="任务最大尝试次数，超过后标记为死信（dead）",
     )
+    task_queue_max_depth: int = Field(
+        default=100,
+        ge=0,
+        description="队列中 queued 任务数上限，超出时入队返回 429；0 表示不限制",
+    )
+    task_worker_max_concurrency: int = Field(
+        default=2,
+        ge=1,
+        description="单个 Worker 进程同时执行的任务数上限，达到后不再领取新任务",
+    )
+    task_inline_max_running: int = Field(
+        default=8,
+        ge=0,
+        description="inline 模式下同时运行的任务线程上限，超出时返回 429；0 表示不限制",
+    )
 
     github_personal_access_token: str | None = None
+
+    database_backend: Literal["sqlite", "mysql"] = Field(
+        default="sqlite",
+        description="业务状态存储后端；mysql 需要 MySQL 8.0+ 与 pymysql",
+    )
+    mysql_url: SecretStr = Field(
+        default=SecretStr(""),
+        description="database_backend=mysql 时的连接串，如 mysql://user:pass@host:3306/devpilot",
+    )
+    mysql_pool_size: int = Field(default=8, ge=1, le=64, description="MySQL 连接池大小")
+
+    api_keys: SecretStr = Field(
+        default=SecretStr(""),
+        description="允许访问 API 的密钥，逗号分隔；为空表示不启用鉴权（生产环境禁止）",
+    )
+    allowed_repo_roots: str = Field(
+        default="",
+        description="允许 Agent 操作的仓库根目录，逗号分隔；为空表示不限制",
+    )
 
     database_path: Path = BACKEND_ROOT / "data" / "devpilot.db"
     sandbox_image: str = "devpilot-sandbox:py312"
@@ -174,6 +216,28 @@ class Settings(BaseSettings):
         """! @brief 把逗号分隔的 CORS 配置转换为来源列表。"""
 
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def api_key_list(self) -> list[str]:
+        """! @brief 把逗号分隔的 API Key 配置转换为非空密钥列表。"""
+
+        return [item.strip() for item in self.api_keys.get_secret_value().split(",") if item.strip()]
+
+    @property
+    def allowed_repo_root_list(self) -> list[Path]:
+        """! @brief 解析仓库根目录白名单；返回已展开、已解析符号链接的绝对路径。"""
+
+        return [
+            Path(item.strip()).expanduser().resolve()
+            for item in self.allowed_repo_roots.split(",")
+            if item.strip()
+        ]
+
+    def validate_security(self) -> None:
+        """! @brief 生产环境必须启用 API Key 鉴权，否则拒绝启动。"""
+
+        if self.app_env == "production" and not self.api_key_list:
+            raise RuntimeError("生产环境必须配置 API_KEYS，拒绝以无鉴权方式启动")
 
     def validate_llm(self) -> None:
         """! @brief 在真正调用模型前校验必填 LLM 配置。"""

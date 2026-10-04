@@ -11,7 +11,7 @@ from uuid import uuid4
 from ..exceptions import TaskNotFoundError
 from ..models.agent_state import AgentEvent, PlanStep
 from ..models.task import DevelopmentTask, ExecutionMode, TaskStatus
-from .connection import get_connection
+from .connection import get_connection, upsert_sql
 
 
 def _now_iso() -> str:
@@ -483,14 +483,11 @@ class TaskRepository:
             # 每个任务只保留一个来源记录。重复导入或修正来源时，以 task_id
             # 主键覆盖旧值，使查询接口始终看到最新的一份来源元数据。
             conn.execute(
-                """
-                INSERT OR REPLACE INTO task_sources (
-                    task_id,
-                    source_type,
-                    source_json
-                )
-                VALUES (?, ?, ?)
-                """,
+                upsert_sql(
+                    "task_sources",
+                    ("task_id",),
+                    ("task_id", "source_type", "source_json"),
+                ),
                 (
                     task_id,
                     source_type,

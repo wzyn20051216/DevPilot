@@ -13,7 +13,25 @@ from ..models.publish import (
     PublishPreview,
     PublishStatus,
 )
-from .connection import get_connection
+from .connection import get_connection, upsert_sql
+
+# 顺序必须与 save_preview 传入的参数元组一致。
+_PREVIEW_COLUMNS = (
+    "task_id",
+    "owner",
+    "repo",
+    "base_branch",
+    "head_branch",
+    "commit_message",
+    "pr_title",
+    "pr_body",
+    "files_json",
+    "snapshot_hash",
+    "status",
+    "pr_url",
+    "created_at",
+    "updated_at",
+)
 
 
 def _now_iso() -> str:
@@ -54,25 +72,7 @@ class PublishRepository:
             # task_id 是主键，重复生成 Publish Preview 时用新快照整体替换旧值。
             # 这也会把状态恢复为 preview 当前值（通常是 awaiting_approval）。
             _ = conn.execute(
-                """
-                INSERT OR REPLACE INTO publish_previews (
-                    task_id,
-                    owner,
-                    repo,
-                    base_branch,
-                    head_branch,
-                    commit_message,
-                    pr_title,
-                    pr_body,
-                    files_json,
-                    snapshot_hash,
-                    status,
-                    pr_url,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                upsert_sql("publish_previews", ("task_id",), _PREVIEW_COLUMNS),
                 (
                     preview.task_id,
                     preview.owner,
