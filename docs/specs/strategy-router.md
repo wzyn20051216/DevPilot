@@ -106,7 +106,7 @@ def decide_strategy(
 
 1. `uv run python -m pytest` 全部通过（当前 141 项，预期新增约 10 项）
 2. `strategy=None` 时基线行为逐字不变（快照测试证明）
-3. `decide_strategy` 对全部 12 个 Verified 抽样实例都能给出非空 `mode` 与 `reasons`
+3. `decide_strategy` 对 `verified_ab_summary.csv` 中已完成的 Verified 实例（当前 7 个唯一题）都能给出非空 `mode` 与 `reasons`
 4. 不新增任何硬编码的仓库名或题目 ID
 
 ## 明确不做

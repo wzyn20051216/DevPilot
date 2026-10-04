@@ -760,12 +760,13 @@ DevPilot/
 
 1. `backend/src/models/agent_state.py`：先理解 State/Event。
 2. `backend/src/agents/base_tool_agent.py`：理解 Tool Calling 循环。
-3. `backend/src/tools/registry.py`：理解工具发现和权限。
-4. `backend/src/agents/orchestrator.py`：理解多 Agent 交接和返工。
-5. `backend/src/services/task_execution_service.py`：理解后台执行与 SSE 解耦。
-6. `backend/src/rag/code_index.py`：理解混合检索。
-7. `backend/src/evals/runner.py` 和 `real_world.py`：理解独立评测。
-8. 最后阅读前端 Store 和工作台，观察事件如何映射到 UI。
+3. `backend/src/agents/strategy.py`：理解任务特征如何路由到不同工作流。
+4. `backend/src/tools/registry.py`：理解工具发现和权限。
+5. `backend/src/agents/orchestrator.py`：理解多 Agent 交接和返工。
+6. `backend/src/services/task_execution_service.py`：理解后台执行与 SSE 解耦。
+7. `backend/src/rag/code_index.py`：理解混合检索。
+8. `backend/src/evals/runner.py` 和 `real_world.py`：理解独立评测。
+9. 最后阅读前端 Store 和工作台，观察事件如何映射到 UI。
 
 ---
 
@@ -780,6 +781,7 @@ DevPilot/
 | 扩样评测 | 23 题候选池、分层选择、重复参数和描述统计 | 第五轮已抽样 20 题，9 题未通过校准；11 题各运行 3 次，21/33 成功，包含既有开发题。 |
 | 协议探针 | Python 沙箱探针、提示词检查单 | 工具可运行；尚无独立消融证明提高成功率 |
 | 动态 RAG | 源文件数量和查询定位信号的启发式规则 | API 与 Worker 现共享策略；阈值并非通过大仓库对照实验优化所得 |
+| 动态 Agent 策略 | 按 Python 占比、目标文件行数、仓库规模与问题语义选择 `code_outline`/强制探针 | API、Worker、真实评测共用纯函数；7 个已评测 Verified 题的离线决策 smoke 通过，尚无新的端到端成功率结论 |
 | Token 优化 | 观测去重、历史摘要、缓存 usage 统计 | 单题成本下降，合成小任务成本反而上升；无总体净收益结论 |
 | API/Worker 分离 | SQLite 队列、领取、心跳、失败重试、死信 | 租约丢失采用隔离后人工恢复；Redis 为非原子实验实现；无多机生产验收 |
 | 隔离部署 | Docker 沙箱与独立 daemon 配置入口 | K8s 清单是示例；每任务 Job 和 Firecracker 适配器均未实现 |
@@ -794,9 +796,25 @@ DevPilot/
 
 SQLite 队列中租约过期会把队列项隔离为 `dead`，并把运行中的任务置为 `interrupted`。确认旧 Worker 已停止后才可显式 `/resume`。租约超时本身不能证明旧进程停止，当前没有跨进程 fencing，因此不自动把写代码任务交给另一 Worker。
 
-### 10.3 下一轮优先验收
+### 10.3 动态 Agent 策略路由
 
-1. 冻结模型、提示词和测试判分，使用未调参的新任务，按题配对重复比较默认策略、动态 RAG 和多角色模式；报告失败与环境无效项。
+`backend/src/agents/strategy.py` 中的 `decide_strategy` 是无网络副作用的纯决策函数。它复用动态 RAG 策略的源码文件统计与查询信号提取，返回 `mode`、中文 `reasons` 和原始 `metrics`。API 进程与独立 Worker 都通过 `services/task_policy.py` 调用它，避免两种部署形态行为漂移。
+
+| 决策信号 | 结果 |
+|---|---|
+| Python 文件占比低于 `STRATEGY_PYTHON_MIN_RATIO` | 关闭只支持 Python AST 的 `code_outline` |
+| 明确 Python 目标文件达到 `STRATEGY_OUTLINE_MIN_LINES` | 暴露 `code_outline`，追加结构导航段 |
+| 无明确文件，仓库达到 `STRATEGY_OUTLINE_MIN_REPO_FILES` | 暴露 `code_outline` |
+| 问题命中迭代器、生成器、序列化、`AttributeError` 等行为语义 | 提示词强制修改前/后执行同一 `protocol_probe` |
+| 文档、字符串格式化或配置问题 | 不附加强制探针段 |
+
+关闭 `STRATEGY_ROUTER_ENABLED` 时，任务层返回可观测的 `static_fallback`，Agent 组装层再按历史静态路径构造，因此基线提示词、工具集与 14 轮上限保持逐字一致。`single_adaptive` 会把决策完整写入真实评测 `report.json` 的每行 `strategy` 字段。
+
+在已完成配对评测的 7 个 Verified 实例上做了一次不调用 LLM 的决策 smoke：2 题选择 `outline_only`，1 题选择 `probe_only`，4 题选择 `standard`；每题都产生非空模式与理由。这只证明路由可执行和决策有分歧，不证明修复率已提升。
+
+### 10.4 下一轮优先验收
+
+1. 冻结模型、阈值、提示词和测试判分，使用未调参的新任务，按题配对重复比较 `single_no_rag` 与 `single_adaptive`；报告失败、环境无效项和每次路由决策。
 2. 第五轮已在校准阶段持久化部分报告并逐行更新。下一步需解决 9/20 题校准未过的问题，接入官方 harness，对外比较时记录镜像 digest、模型版本与完整成本口径。
 3. 为 Worker 增加真正的执行 fencing、并发上限、仓库级互斥和故障注入；验收后才讨论自动故障切换。
 4. 面向服务部署补鉴权、仓库授权、配额、审计和统一状态存储；远程 Docker 必须解决远端工作区路径一致性。

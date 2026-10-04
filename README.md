@@ -12,6 +12,7 @@ DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。�
 - 本地任务与 GitHub Issue 双入口
 - 计划审批和 GitHub 发布二次确认
 - Hybrid Code RAG、AST 分块、BM25 与向量检索；支持按仓库规模与查询歧义动态启用（`RAG_MODE=auto`）
+- 动态 Agent 策略路由：按仓库语言占比、目标文件规模和问题语义选择 `code_outline` 与强制探针
 - 运行时协议探针工具（`protocol_probe`）：引导模型在沙箱内验证迭代器、异常边界与兼容行为
 - 工具观测去重与摘要、Prompt Cache 命中统计，持续压低长任务 Token 成本
 - 上下文断点恢复：服务重启后 resume 优先恢复中断前的模型上下文；恢复消息后编排流程仍会重新进入，工具可能重放
@@ -83,7 +84,7 @@ flowchart LR
 
 ## Evaluation
 
-评测框架比较 `single_no_rag`、`single_rag`、`multi_no_rag` 和 `multi_rag` 四种 Variant，记录成功率、测试通过率、工具调用、迭代、耗时、Token 和修复轮数。Dashboard API 还提供难度分组、配对消融、Bootstrap 置信区间和 Wilcoxon 检验结果。
+合成评测框架比较 `single_no_rag`、`single_rag`、`multi_no_rag` 和 `multi_rag` 四种 Variant；真实评测另保留历史 `single_enhanced` 对照，并新增 `single_adaptive` 验证动态策略。报告记录成功率、测试通过率、工具调用、迭代、耗时、Token 和修复轮数；动态变体还保存 `mode/reasons/metrics` 供事后归因。
 
 当前数据集包含 12 个可执行 case：9 个 Python 基础 case（easy / medium / hard 各 3 个），以及 3 个跨语言 / 跨文件 case（TypeScript、Java、Python 跨模块大型 Issue），用于验证 10.2.7 的跨语言能力。提交前的自动审计会确认每个 fixture 文件完整且初始 verifier 必须失败，审计结果见 [`backend/benchmarks/audit_report.json`](backend/benchmarks/audit_report.json)。TypeScript / Java 用例需要先构建 polyglot 沙箱镜像：`docker build --target polyglot -t devpilot-sandbox:polyglot -f backend/docker/sandbox.Dockerfile backend/docker`。
 
@@ -103,6 +104,9 @@ uv run python -m backend.src.evals.runner --full --repeats 3
 
 # 调用 LLM 和 Docker：运行小规模 SWE-bench Lite 真实缺陷评测
 uv run python -m backend.src.evals.real_world
+
+# 单独评测动态策略变体
+uv run python -m backend.src.evals.real_world --variant single_adaptive
 ```
 
 正式实验会把 `repeat_index`、模型、参数、数据集 SHA-256、Python 版本和运行平台写入配置快照。原始结果进入 SQLite，并可导出 CSV 后再做配对统计；不要把单次 pilot 结果当成最终性能结论。
@@ -171,6 +175,10 @@ docker compose up --build
 | `AGENT_DEDUPE_OBSERVATIONS` | 工具观测去重开关（同参数同结果 / 文件未变化只回传指针） | `true` |
 | `AGENT_CHECKPOINT_ENABLED` | 是否把 Agent 消息上下文持久化到 SQLite 供 resume 恢复 | `true` |
 | `RAG_MODE` | `manual` 保持显式 execution_mode；`auto` 按仓库规模与查询歧义动态启用 RAG | `manual` |
+| `STRATEGY_ROUTER_ENABLED` | 单 Agent 是否按任务特征动态选择结构导航与强制探针 | `true` |
+| `STRATEGY_OUTLINE_MIN_LINES` | 明确目标 Python 文件启用 `code_outline` 的最小行数 | `800` |
+| `STRATEGY_OUTLINE_MIN_REPO_FILES` | 无明确文件引用时启用 `code_outline` 的最小仓库源码文件数 | `400` |
+| `STRATEGY_PYTHON_MIN_RATIO` | 启用 Python AST 结构导航所需的最小 Python 文件占比 | `0.5` |
 | `TASK_QUEUE_BACKEND` | `inline` 进程内线程；`sqlite` / `redis` 交由独立 Worker 执行 | `inline` |
 | `REDIS_URL` | `TASK_QUEUE_BACKEND=redis` 时的连接地址 | empty |
 | `TASK_WORKER_LEASE_SECONDS` / `TASK_WORKER_HEARTBEAT_SECONDS` | Worker 租约时长与心跳续租间隔 | `300` / `30` |

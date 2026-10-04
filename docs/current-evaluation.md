@@ -197,6 +197,24 @@ docker run --rm --mount "type=bind,source=E:/desktop/DevPilot/backend/data,targe
 
 文件级检索批次 `81657a8f46f24de9a1d055e59dfa057f` 在 9 条标注查询上得到 Recall@5 = 1.0、MRR = 0.7222、平均查询耗时约 9.2 ms、平均索引构建耗时约 1.25 秒。这证明检索器能找到目标文件，但检索指标好并不等于 Agent 修复率更高。
 
+## 动态策略路由 smoke（2026-10-04）
+
+基于上一轮 `single_no_rag` / `single_enhanced` 配对轨迹，已实现 `decide_strategy`：大型 Python 结构问题才暴露 `code_outline`，迭代器、生成器、序列化和典型运行时异常问题才追加强制探针段。该决策同时接入 API、Worker 和真实评测 `single_adaptive` 变体。
+
+为避免再次进行高成本 LLM 评测，本轮先对 `backend/data/verified_ab_summary.csv` 中已完成配对评测的 7 个 Verified 实例做无网络、无模型的决策 smoke。输入为原始 `problem_statement` 和对应基线工作区：
+
+| 实例 | 决策 | `code_outline` | 强制探针 | 主要观测 |
+|---|---|---:|---:|---|
+| astropy-13579 | `outline_only` | 是 | 否 | 1,163 个源码文件 |
+| seaborn-3187 | `standard` | 否 | 否 | 153 个源码文件，显式引用未定位到仓库内 Python 文件 |
+| flask-5014 | `standard` | 否 | 否 | 80 个源码文件 |
+| xarray-6744 | `probe_only` | 否 | 是 | 167 个源码文件，命中 iterator/iteration |
+| pylint-4970 | `outline_only` | 是 | 否 | 878 个源码文件，与既有胜例中的大文件导航一致 |
+| pytest-5631 | `standard` | 否 | 否 | 202 个源码文件，显式引用未定位到仓库内 Python 文件 |
+| sphinx-7454 | `standard` | 否 | 否 | 文档特征命中，不强制探针 |
+
+分支分布为 `outline_only=2`、`probe_only=1`、`standard=4`；7/7 都有非空 `mode` 和 `reasons`。这是决策边界的 smoke，**没有调用 LLM、没有生成新补丁，因此不是修复率实验**。下一步若要比较效果，应冻结阈值后在新题上对 `single_no_rag` 和 `single_adaptive` 做配对重复。
+
 ## 项目价值判断
 
 当前项目已经具备 AI 应用／Agent 实习和校招作品的核心证据：模型能调用真实工具修改代码，机器测试拥有最终裁决权；任务执行与浏览器连接解耦；事件、工具耗时和 Token 可追踪；实验能保存配置、补丁、轨迹与独立验证结果；并且真实仓库评测暴露了失败案例，而非只展示成功 Demo。
@@ -233,6 +251,10 @@ docker run --rm --mount "type=bind,source=E:/desktop/DevPilot/backend/data,targe
 # 真实缺陷评测，需要 Docker 和已配置的 DeepSeek 额度
 .venv\Scripts\python.exe -m backend.src.evals.real_world `
   --variant single_no_rag --variant single_rag
+
+# 动态策略变体；每条 report row 会记录 strategy.mode/reasons/metrics
+.venv\Scripts\python.exe -m backend.src.evals.real_world `
+  --variant single_adaptive
 
 # 本地已缓存镜像的 7 实例分层评测（第四轮样本，成功率 4/7）
 .venv\Scripts\python.exe -m backend.src.evals.real_world `
