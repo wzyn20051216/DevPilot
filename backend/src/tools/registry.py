@@ -12,6 +12,8 @@ from ..mcp_clients.repository_client import (
     call_repository_tool_sync,
     list_repository_tools_sync,
 )
+from .analyze_code_semantics import analyze_code_semantics
+from .analyze_repository import analyze_repository_context
 from .command_tool import run_command
 from .protocol_probe import probe_runtime
 from .test_tool import run_tests as run_test
@@ -177,12 +179,76 @@ PROTOCOL_PROBE_DEFINITION: ChatCompletionFunctionToolParam = {
 }
 
 
+ANALYZE_REPOSITORY_DEFINITION: ChatCompletionFunctionToolParam = {
+    "type": "function",
+    "function": {
+        "name": "analyze_repository_context",
+        "description": (
+            "分析仓库上下文，提取架构文档、识别代码模式、理解仓库约定。"
+            "用于解决仓库特定 API 语义问题。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "focus_area": {
+                    "type": ["string", "null"],
+                    "description": "可选，关注的领域/模块（如 'linter', 'parser'）",
+                },
+                "target_function": {
+                    "type": ["string", "null"],
+                    "description": "可选，目标函数名，将查找类似实现",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+ANALYZE_CODE_SEMANTICS_DEFINITION: ChatCompletionFunctionToolParam = {
+    "type": "function",
+    "function": {
+        "name": "analyze_code_semantics",
+        "description": (
+            "分析代码的静态语义，包括 AST 结构、类型推断、符号解析。"
+            "用于解决超出运行时探针范围的静态分析问题。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": ["string", "null"],
+                    "description": "要分析的文件路径（相对于仓库根）",
+                },
+                "target_class": {
+                    "type": ["string", "null"],
+                    "description": "可选，目标类名",
+                },
+                "target_function": {
+                    "type": ["string", "null"],
+                    "description": "可选，目标函数名",
+                },
+                "check_types": {
+                    "type": "boolean",
+                    "description": "是否检查类型注解",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 LOCAL_TOOL_DEFINITIONS: list[ChatCompletionFunctionToolParam] = [
     WRITE_FILE_DEFINITION,
     REPLACE_IN_FILE_DEFINITION,
     RUN_TEST_DEFINITION,
     RUN_COMMAND_DEFINITION,
     PROTOCOL_PROBE_DEFINITION,
+    ANALYZE_REPOSITORY_DEFINITION,
+    ANALYZE_CODE_SEMANTICS_DEFINITION,
 ]
 
 
