@@ -1,86 +1,34 @@
-# pydicom-1139 改进后测试结果
+# pydicom-1139 诊断重跑（2026-10-04）
 
-**测试日期**: 2026-10-04  
-**测试目的**: 验证增强探针检查清单后的改进效果(仅作为诊断性测试)  
-**Run ID**: `2c94b208d8494c65a444afc8141284f3`
+- run_id：`2c94b208d8494c65a444afc8141284f3`，`deepseek-v4-flash`，`single_no_rag`，14 轮，173,837 Token，98.7 秒
+- 配置：当时的工作树版本，只把迭代器探针要求改写成逐条清单；没有新增工具
+- 性质：已知失败题上的单次诊断，**不是**改进证据，不计入任何成功率
 
-## ⚠️ 重要声明
+## 结果
 
-这是**诊断性测试**,不能作为能力边界已解决的证据。根据项目复核文档:
-> 对已知失败题继续针对测试节点调提示词,只能算开发集诊断,不能证明泛化
+仍失败，非预期失败节点 `TestPersonName::test_next` 与第四、第五轮**相同**。
+（此前文档曾写「失败点从 not iterable 变为 not an iterator，说明有进步」，这是误读：
+`not iterable` 出自未修改代码的基线校准输出，不是此前候选补丁的失败信息。已撤回。）
 
-## 测试结果
-
-**结果**: ❌ 失败 (但失败原因发生了变化)
-
-### 之前的失败 (第五轮)
-```
-test_next: TypeError: 'PersonName' object is not iterable
-```
-- Agent 遗漏了迭代器协议的实现
-
-### 改进后的失败 (本次)
-```
-test_next: TypeError: 'PersonName' object is not an iterator
-```
-- Agent 实现了 `__iter__` 和 `__contains__`,但测试期望 `next(pn4)` 抛出 `AttributeError`,实际抛出了 `TypeError`
-
-## Agent 生成的补丁
+候选补丁只新增 `__contains__` 与 `__iter__`（返回 `iter(str(self))`）。隐藏测试末尾要求：
 
 ```python
-def __contains__(self, item):
-    """Support the ``in`` operator using the string representation."""
-    return item in str(self)
-
-def __iter__(self):
-    """Iterate over the characters of the string representation."""
-    return iter(str(self))
+pn4 = PersonName("SomeName")
+with pytest.raises(AttributeError):
+    next(pn4)
 ```
 
-## 探针验证结果
+即对未先调用 `iter()` 的对象直接 `next()` 必须抛 `AttributeError`。这要求实现成
+「`__iter__` 保存内部迭代器并返回 self、`__next__` 读取该属性」这种特定写法。
 
-Agent 在第 11 轮主动调用了 `protocol_probe`,**4 个探针全部通过** ✅:
+## 归因
 
-| 探针 | 覆盖点 | 结果 |
-|---|---|---|
-| `issue_scenario` | 原样复现 Issue | ✅ |
-| `iteration` | 正常迭代、空迭代、`next(obj, default)` | ✅ |
-| `repeat_and_bytes` | 重复迭代、bytes 编码 | ✅ |
-| `empty_and_attrs` | 空值语义、属性访问 | ✅ |
+1. Agent 工作区中不存在该测试（测试来自 SWE-bench 的 test_patch，不暴露给 Agent），
+   Issue 文本也没有提到 `next()` 的行为。模型读到的 `test_valuerep.py` 是旧版本。
+2. 探针清单确实提到「旧式 next() 兼容」，模型的探针只验证了 `next(iter(obj))`，
+   没有验证直接 `next(obj)`；即使验证了，也无法从 Issue 推断出「应抛 AttributeError」。
+3. 因此这题更接近「隐藏测试要求了 Issue 未说明的行为」。OpenAI 在建立 SWE-bench Verified
+   时把这类题目作为人工剔除对象之一。继续针对它调提示词属于对答案过拟合。
 
-## 关键观察
-
-### ✅ 改进生效的证据
-1. **探针覆盖更全面**: Agent 构造了 4 个探针,覆盖了迭代、包含、空值、重复迭代等场景
-2. **探针全部通过**: 说明运行时行为是正确的
-3. **失败点变化**: 从"不可迭代"变为"不是迭代器",说明部分协议已实现
-
-### ❌ 仍然存在的问题
-1. **测试期望的细微差异**: 测试期望 `next(pn4)` 抛出 `AttributeError`,但 `iter(str(self))` 返回的字符串迭代器不支持直接 `next()`,会抛出 `TypeError`
-2. **旧式 next() 兼容性**: 虽然提示词中强调了"旧式 next() 兼容",但 Agent 没有在探针中验证 `next(obj)` (而不是 `next(iter(obj))`)
-
-## 统计数据
-
-- **总 Token**: 173,837
-- **轮次**: 14 轮
-- **耗时**: 98.66 秒
-- **工具调用**: 15 次
-
-## 结论
-
-### 改进的价值
-- ✅ 增强的探针检查清单**确实引导 Agent 构造了更全面的探针**
-- ✅ Agent 主动使用了 `protocol_probe` 并验证了多个协议点
-- ✅ 失败原因从"完全不可迭代"变为"协议细节不符",说明有进步
-
-### 局限性
-- ❌ 仍然失败,说明**单纯改进提示词不足以解决所有问题**
-- ❌ 探针覆盖虽然更全,但仍然遗漏了 `next(obj)` vs `next(iter(obj))` 的区别
-- ❌ 这是对开发集的诊断,**不能证明泛化能力提升**
-
-## 下一步
-
-根据用户要求,采用**选项 2**: 完成工具集成,但不在旧题上测试,而是:
-1. 完成静态分析工具和仓库上下文工具的集成
-2. 准备新的实例进行验证
-3. 清理无用的实例,将新实例放到 E 盘
+后续改进转为在未参与调参的 SWE-bench Verified 新题上做配对 A/B，见
+[能力改进计划](capability-improvement-plan.md)。

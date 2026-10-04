@@ -1,4 +1,5 @@
 ###写文件
+import ast
 import os
 import tempfile
 from collections.abc import Callable, Iterator
@@ -38,6 +39,50 @@ def _check_write_guard(repo_path: str, path: Path) -> None:
     relative_path = path.relative_to(Path(repo_path).resolve()).as_posix()
     if guard is not None and guard(relative_path):
         raise ValueError(f"真实评测禁止修改测试或测试配置: {relative_path}")
+
+
+# 编辑语法守卫：参考 SWE-agent 的带 linter 编辑命令，拒绝会引入语法错误的
+# Python 编辑，文件保持原样。默认关闭，由调用方按运行上下文显式开启，
+# 便于真实评测中与旧行为做干净对照。
+_syntax_guard: ContextVar[bool] = ContextVar("devpilot_syntax_guard", default=False)
+
+
+@contextmanager
+def use_syntax_guard(enabled: bool = True) -> Iterator[None]:
+    """! @brief 在当前运行上下文内开启或关闭 Python 编辑语法守卫。"""
+
+    token = _syntax_guard.set(enabled)
+    try:
+        yield
+    finally:
+        _syntax_guard.reset(token)
+
+
+def _check_python_syntax(path: Path, old_content: str, content: str) -> None:
+    """! @brief 新内容有语法错误、而原文件可解析时拒绝写入。
+
+    原文件本身就无法被当前解释器解析（如旧语法文件）时不拦截，避免误伤。
+    """
+
+    if not _syntax_guard.get() or path.suffix != ".py":
+        return
+    try:
+        ast.parse(content)
+    except SyntaxError as exc:
+        try:
+            ast.parse(old_content)
+        except SyntaxError:
+            return
+        lines = content.splitlines()
+        line_no = exc.lineno or 0
+        context = "\n".join(
+            f"{number}: {lines[number - 1]}"
+            for number in range(max(1, line_no - 2), min(len(lines), line_no + 2) + 1)
+        )
+        raise ValueError(
+            f"编辑被拒绝：修改后第 {line_no} 行语法错误（{exc.msg}），文件未改动。\n"
+            f"{context}\n请修正缩进/括号后重新提交编辑。"
+        ) from exc
 
 
 def replace_in_file(
@@ -125,6 +170,7 @@ def write_file(
             "changed": False,
             "message": "文件内容没有变化",
         }
+    _check_python_syntax(path, old_content, content)
     # ======================
     # 原子写入逻辑：先写同目录临时文件，全部写完再替换原文件
     # 好处：防止程序中途崩溃，造成原文件截断损坏

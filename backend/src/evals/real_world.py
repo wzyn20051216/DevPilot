@@ -20,7 +20,7 @@ from ..agents.single_developer_agent import SingleDeveloperAgent
 from ..config import settings
 from ..sandbox.docker_runner import SandboxProfile, use_sandbox_profile
 from ..tools.test_tool import run_tests
-from ..tools.write_tool import use_write_guard
+from ..tools.write_tool import use_syntax_guard, use_write_guard
 from .dataset import PROJECT_ROOT
 from .runner import VARIANTS, collect_event_metrics, collect_timing, collect_usage
 
@@ -65,6 +65,14 @@ REAL_INSTANCE_POOL: tuple[str, ...] = (
     "sqlfluff__sqlfluff-1763",
     "sqlfluff__sqlfluff-2419",
 )
+# 真实评测可用的数据集。Lite dev 是已经用于开发调参的 23 题；Verified test
+# 是经人工筛选的 500 题，作为未参与调参的新题来源。
+DATASETS: dict[str, tuple[str, str]] = {
+    "lite": ("SWE-bench/SWE-bench_Lite", "dev"),
+    "verified": ("SWE-bench/SWE-bench_Verified", "test"),
+}
+# 真实评测额外支持增强策略变体；合成 runner 的 VARIANTS 保持不变。
+REAL_VARIANTS: tuple[str, ...] = (*VARIANTS, "single_enhanced")
 REAL_EVAL_ROOT = PROJECT_ROOT / "data" / "real_world_evals"
 REPOSITORY_CACHE_ROOT = PROJECT_ROOT / "data" / "repository_cache"
 PROTECTED_PATH_PREFIXES = ("tests/", "test/")
@@ -119,15 +127,22 @@ def _sandbox_profile(instance: SweBenchInstance) -> SandboxProfile:
 def load_swebench_lite_dev() -> dict[str, SweBenchInstance]:
     """! @brief 从官方 Hugging Face 数据服务分页读取 Lite dev split 全部实例。"""
 
+    return load_swebench("lite")
+
+
+def load_swebench(dataset_key: str = "lite") -> dict[str, SweBenchInstance]:
+    """! @brief 分页读取 DATASETS 中指定数据集与 split 的全部实例。"""
+
+    dataset_name, split = DATASETS[dataset_key]
     instances: dict[str, SweBenchInstance] = {}
     offset = 0
     length = 100
     while True:
         query = urllib.parse.urlencode(
             {
-                "dataset": "SWE-bench/SWE-bench_Lite",
+                "dataset": dataset_name,
                 "config": "default",
-                "split": "dev",
+                "split": split,
                 "offset": offset,
                 "length": length,
             }
@@ -493,14 +508,15 @@ def audit_real_instance(instance: SweBenchInstance, run_id: str) -> dict[str, An
 
 def _run_agent(instance: SweBenchInstance, variant: str, workspace: Path):
     enable_rag = variant in {"single_rag", "multi_rag"}
+    enhanced = variant == "single_enhanced"
     with use_sandbox_profile(_sandbox_profile(instance)), use_write_guard(
         lambda path: bool(_protected_candidate_paths([path]))
-    ):
+    ), use_syntax_guard(enhanced):
         if variant.startswith("single_"):
             return list(
-                SingleDeveloperAgent(str(workspace), enable_rag=enable_rag).run_stream(
-                    instance.problem_statement
-                )
+                SingleDeveloperAgent(
+                    str(workspace), enable_rag=enable_rag, enhanced=enhanced
+                ).run_stream(instance.problem_statement)
             )
         return list(
             DevPilotOrchestrator(str(workspace), enable_rag=enable_rag).run_stream(
@@ -673,18 +689,22 @@ def run_real_world_evaluation(
     instance_ids: tuple[str, ...] = DEFAULT_INSTANCES,
     variants: tuple[str, ...] = ("single_no_rag", "single_rag"),
     repeats: int = 1,
+    dataset_key: str = "lite",
 ) -> Path:
     """! @brief 审计并运行真实仓库实验矩阵，逐条持久化防止中断丢失。
 
     @param repeats 每个 instance/variant 的独立重复次数，必须 >= 1。
+    @param dataset_key DATASETS 中的数据集键，如 lite 或 verified。
     """
 
     if repeats < 1:
         raise ValueError("repeats 必须 >= 1")
-    unknown = set(variants).difference(VARIANTS)
+    unknown = set(variants).difference(REAL_VARIANTS)
     if unknown:
         raise ValueError("未知 variant: " + ", ".join(sorted(unknown)))
-    dataset = load_swebench_lite_dev()
+    dataset = (
+        load_swebench_lite_dev() if dataset_key == "lite" else load_swebench(dataset_key)
+    )
     instances = [dataset[instance_id] for instance_id in instance_ids]
     run_id = uuid4().hex
     run_dir = REAL_EVAL_ROOT / run_id
@@ -701,7 +721,7 @@ def run_real_world_evaluation(
                 {
                     "run_id": run_id,
                     "created_at": datetime.now(UTC).isoformat(),
-                    "dataset": "SWE-bench/SWE-bench_Lite:dev",
+                    "dataset": ":".join(DATASETS[dataset_key]),
                     "status": status,
                     "model": settings.llm_model,
                     "agent_config": {
@@ -767,9 +787,16 @@ def run_real_world_evaluation(
 def main() -> None:
     """! @brief 命令行入口。"""
 
-    parser = argparse.ArgumentParser(description="运行 SWE-bench Lite dev 小规模真实评测")
+    parser = argparse.ArgumentParser(description="运行 SWE-bench 小规模真实评测")
     parser.add_argument("--instance", action="append", dest="instances")
-    parser.add_argument("--variant", action="append", choices=VARIANTS)
+    parser.add_argument("--variant", action="append", choices=REAL_VARIANTS)
+    parser.add_argument(
+        "--dataset",
+        choices=sorted(DATASETS),
+        default="lite",
+        help="lite=Lite dev（已用于调参）；verified=Verified test（新题）",
+    )
+    parser.add_argument("--seed", type=int, default=0, help="--pool 分层抽样种子")
     parser.add_argument(
         "--repeats",
         type=int,
@@ -786,7 +813,9 @@ def main() -> None:
     if args.pool is not None:
         # --pool 显式传入时，从真实 dev split 分层采样，覆盖尽量多的仓库。
         instance_ids = tuple(
-            select_stratified_instances(load_swebench_lite_dev(), args.pool)
+            select_stratified_instances(
+                load_swebench(args.dataset), args.pool, seed=args.seed
+            )
         )
     else:
         instance_ids = tuple(args.instances or DEFAULT_INSTANCES)
@@ -794,6 +823,7 @@ def main() -> None:
         instance_ids=instance_ids,
         variants=tuple(args.variant or ("single_no_rag", "single_rag")),
         repeats=args.repeats,
+        dataset_key=args.dataset,
     )
     print(output)
 

@@ -12,8 +12,7 @@ from ..mcp_clients.repository_client import (
     call_repository_tool_sync,
     list_repository_tools_sync,
 )
-from .analyze_code_semantics import analyze_code_semantics
-from .analyze_repository import analyze_repository_context
+from .code_outline import code_outline
 from .command_tool import run_command
 from .protocol_probe import probe_runtime
 from .test_tool import run_tests as run_test
@@ -179,62 +178,22 @@ PROTOCOL_PROBE_DEFINITION: ChatCompletionFunctionToolParam = {
 }
 
 
-ANALYZE_REPOSITORY_DEFINITION: ChatCompletionFunctionToolParam = {
+CODE_OUTLINE_DEFINITION: ChatCompletionFunctionToolParam = {
     "type": "function",
     "function": {
-        "name": "analyze_repository_context",
+        "name": "code_outline",
         "description": (
-            "分析仓库上下文，提取架构文档、识别代码模式、理解仓库约定。"
-            "用于解决仓库特定 API 语义问题。"
+            "基于 AST 查看 Python 文件结构：不传 symbol 返回类/方法/函数签名与行号骨架；"
+            "传 symbol（Class、function 或 Class.method）返回该定义带行号的源码。"
+            "比整段 read_file 更省上下文，适合先看类有哪些方法再精确读取。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "focus_area": {
-                    "type": ["string", "null"],
-                    "description": "可选，关注的领域/模块（如 'linter', 'parser'）",
-                },
-                "target_function": {
-                    "type": ["string", "null"],
-                    "description": "可选，目标函数名，将查找类似实现",
-                },
+                "file_path": {"type": "string", "description": "相对仓库根目录的 .py 文件"},
+                "symbol": {"type": ["string", "null"], "description": "可选符号名"},
             },
-            "required": [],
-            "additionalProperties": False,
-        },
-    },
-}
-
-
-ANALYZE_CODE_SEMANTICS_DEFINITION: ChatCompletionFunctionToolParam = {
-    "type": "function",
-    "function": {
-        "name": "analyze_code_semantics",
-        "description": (
-            "分析代码的静态语义，包括 AST 结构、类型推断、符号解析。"
-            "用于解决超出运行时探针范围的静态分析问题。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "file_path": {
-                    "type": ["string", "null"],
-                    "description": "要分析的文件路径（相对于仓库根）",
-                },
-                "target_class": {
-                    "type": ["string", "null"],
-                    "description": "可选，目标类名",
-                },
-                "target_function": {
-                    "type": ["string", "null"],
-                    "description": "可选，目标函数名",
-                },
-                "check_types": {
-                    "type": "boolean",
-                    "description": "是否检查类型注解",
-                },
-            },
-            "required": [],
+            "required": ["file_path"],
             "additionalProperties": False,
         },
     },
@@ -247,8 +206,7 @@ LOCAL_TOOL_DEFINITIONS: list[ChatCompletionFunctionToolParam] = [
     RUN_TEST_DEFINITION,
     RUN_COMMAND_DEFINITION,
     PROTOCOL_PROBE_DEFINITION,
-    ANALYZE_REPOSITORY_DEFINITION,
-    ANALYZE_CODE_SEMANTICS_DEFINITION,
+    CODE_OUTLINE_DEFINITION,
 ]
 
 
@@ -366,20 +324,11 @@ def execute_tool(
             probes=arguments["probes"],
         )
 
-    if tool_name == "analyze_repository_context":
-        return analyze_repository_context(
+    if tool_name == "code_outline":
+        return code_outline(
             repo_path=repo_path,
-            focus_area=arguments.get("focus_area"),
-            target_function=arguments.get("target_function"),
-        )
-
-    if tool_name == "analyze_code_semantics":
-        return analyze_code_semantics(
-            repo_path=repo_path,
-            file_path=arguments.get("file_path"),
-            target_class=arguments.get("target_class"),
-            target_function=arguments.get("target_function"),
-            check_types=arguments.get("check_types", False),
+            file_path=arguments["file_path"],
+            symbol=arguments.get("symbol"),
         )
 
     raise ValueError(
