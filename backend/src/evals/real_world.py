@@ -703,6 +703,7 @@ def run_real_world_evaluation(
                     "status": status,
                     "model": settings.llm_model,
                     "agent_config": {
+                        "reasoning_effort": settings.llm_reasoning_effort,
                         "token_budget": settings.agent_token_budget,
                         "tool_observation_max_chars": (
                             settings.tool_observation_max_chars

@@ -28,10 +28,13 @@ def _response(
     tool_calls: list[Any] | None = None,
     prompt_cache_hit: int = 0,
     prompt_cache_miss: int = 0,
+    reasoning_content: str | None = None,
 ) -> SimpleNamespace:
     """构造 BaseToolAgent 需要的最小 OpenAI 兼容响应。"""
 
-    message = SimpleNamespace(content=content, tool_calls=tool_calls)
+    message = SimpleNamespace(
+        content=content, tool_calls=tool_calls, reasoning_content=reasoning_content
+    )
     usage = SimpleNamespace(
         prompt_tokens=3,
         completion_tokens=2,
@@ -238,6 +241,154 @@ def test_prompt_cache_usage_accumulated(monkeypatch: MonkeyPatch) -> None:
     assert miss == 26
 
 
+@pytest.mark.parametrize(
+    ("tool_results", "expected_notice"),
+    [
+        ([{"file_path": "a.py", "changed": True}], "修改后未执行 run_test"),
+        (
+            [
+                {"file_path": "a.py", "changed": True},
+                {"passed": False, "returncode": 1, "stdout": "failed", "stderr": ""},
+            ],
+            "最近一次 run_test 未通过",
+        ),
+    ],
+)
+def test_final_answer_uses_latest_machine_test_evidence(
+    monkeypatch: MonkeyPatch,
+    tool_results: list[dict[str, Any]],
+    expected_notice: str,
+) -> None:
+    """模型声称通过时，最终输出仍需揭示未验证或失败的最新代码状态。"""
+
+    tool_names = [
+        "run_test" if "passed" in result else "replace_in_file"
+        for result in tool_results
+    ]
+    outcomes = [
+        _response(tool_calls=[_tool_call(name=name, call_id=f"call-{index}")])
+        for index, name in enumerate(tool_names)
+    ] + [_response(content="所有测试已通过")]
+    agent, _ = _build_agent(monkeypatch, outcomes, max_iterations=len(outcomes))
+    results = iter(tool_results)
+    monkeypatch.setattr(base_tool_agent, "execute_tool", lambda **_: next(results))
+
+    events = list(agent.run_stream("q"))
+
+    assert events[-1].type == "final"
+    assert events[-1].message.startswith(f"机器验证：{expected_notice}")
+    assert "所有测试已通过" in events[-1].message
+
+
+def test_later_failed_test_clears_prior_full_suite_success(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """同一工具回合先通过再失败时，不得提前强制收尾。"""
+
+    outcomes = [
+        _response(tool_calls=[_tool_call(name="replace_in_file", call_id="edit")]),
+        _response(
+            tool_calls=[
+                _tool_call(name="run_test", call_id="pass"),
+                _tool_call(name="run_test", call_id="fail"),
+            ]
+        ),
+        _response(content="已结束"),
+    ]
+    agent, client = _build_agent(monkeypatch, outcomes)
+    results = iter(
+        [
+            {"file_path": "a.py", "changed": True},
+            {"passed": True, "returncode": 0},
+            {"passed": False, "returncode": 1},
+        ]
+    )
+    monkeypatch.setattr(base_tool_agent, "execute_tool", lambda **_: next(results))
+
+    events = list(agent.run_stream("q"))
+
+    assert client.chat.completions.requests[-1]["tool_choice"] == "auto"
+    assert events[-1].message.startswith("机器验证：最近一次 run_test 未通过")
+
+
+def test_edit_after_test_in_same_turn_invalidates_pass(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """同一回合测试通过后又写文件，最终不能继承旧测试结论。"""
+
+    outcomes = [
+        _response(tool_calls=[_tool_call(name="replace_in_file", call_id="first-edit")]),
+        _response(
+            tool_calls=[
+                _tool_call(name="run_test", call_id="test"),
+                _tool_call(name="replace_in_file", call_id="second-edit"),
+            ]
+        ),
+        _response(content="已结束"),
+    ]
+    agent, client = _build_agent(monkeypatch, outcomes)
+    results = iter(
+        [
+            {"file_path": "a.py", "changed": True},
+            {"passed": True, "returncode": 0},
+            {"file_path": "a.py", "changed": True},
+        ]
+    )
+    monkeypatch.setattr(base_tool_agent, "execute_tool", lambda **_: next(results))
+
+    events = list(agent.run_stream("q"))
+
+    assert client.chat.completions.requests[-1]["tool_choice"] == "auto"
+    assert events[-1].message.startswith("机器验证：修改后未执行 run_test")
+
+
+def test_edit_deadline_rejects_unadvertised_search_tool(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """只开放写工具的轮次，模型返回搜索调用也不得实际执行。"""
+
+    definitions = [
+        {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+        for name in ("search_code", "replace_in_file")
+    ]
+    monkeypatch.setattr(base_tool_agent, "get_tool_definitions", lambda **_: definitions)
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=_FakeCompletions(
+                [
+                    _response(tool_calls=[_tool_call(name="search_code", call_id="search")]),
+                    _response(tool_calls=[_tool_call(name="replace_in_file", call_id="edit")]),
+                    _response(content="done"),
+                ]
+            )
+        )
+    )
+    monkeypatch.setattr(base_tool_agent, "create_client", lambda: client)
+    executed: list[str] = []
+
+    def fake_execute(tool_name: str, **_: Any) -> dict[str, Any]:
+        executed.append(tool_name)
+        return {"changed": True, "file_path": "a.py"}
+
+    monkeypatch.setattr(base_tool_agent, "execute_tool", fake_execute)
+    agent = BaseToolAgent(
+        repo_path=".",
+        name="coder",
+        system_prompt="test",
+        allowed_tools={"search_code", "replace_in_file"},
+        max_iterations=3,
+        edit_deadline=1,
+    )
+
+    events = list(agent.run_stream("fix"))
+
+    assert executed == ["replace_in_file"]
+    assert client.chat.completions.requests[0]["tools"] == [definitions[1]]
+    denied = next(event for event in events if event.type == "tool_result")
+    assert denied.data["succeeded"] is False
+    assert "本轮不允许调用工具" in denied.data["result_preview"]
+
+
 # ---------------------------------------------------------------
 # D. protocol_probe 工具
 # ---------------------------------------------------------------
@@ -413,3 +564,21 @@ def test_restored_context_consumed_once_and_new_feedback_used(monkeypatch):
     messages = client.chat.completions.requests[1]["messages"]
     assert messages[1]["content"] == "new failure feedback"
     assert initial == [{"role": "system", "content": "sys"}, {"role": "user", "content": "old"}]
+
+
+def test_deepseek_thinking_tool_turn_preserves_reasoning(monkeypatch: MonkeyPatch) -> None:
+    """! @brief DeepSeek 工具回合需回传 reasoning_content，且不向事件公开。"""
+    monkeypatch.setattr(base_tool_agent.settings, "llm_model", "deepseek-v4-pro")
+    monkeypatch.setattr(base_tool_agent.settings, "llm_reasoning_effort", "max")
+    outcomes = [
+        _response(tool_calls=[_tool_call('{"file_path":"a.py"}', call_id="c1")], reasoning_content="private reasoning"),
+        _response(content="done", reasoning_content="private final"),
+    ]
+    agent, client = _build_agent(monkeypatch, outcomes)
+    monkeypatch.setattr(base_tool_agent, "execute_tool", lambda **_: "data")
+    events = list(agent.run_stream("q"))
+    requests = client.chat.completions.requests
+    assert requests[0]["reasoning_effort"] == "max"
+    assert requests[0]["extra_body"]["thinking"]["type"] == "enabled"
+    assert requests[1]["messages"][2]["reasoning_content"] == "private reasoning"
+    assert "private reasoning" not in repr(events)

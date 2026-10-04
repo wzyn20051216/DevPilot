@@ -314,7 +314,8 @@ def test_agent_rejects_text_only_completion_before_required_edit(
     events = list(agent.run_stream("fix"))
 
     assert events[-1].type == "final"
-    assert events[-1].message == "done"
+    assert events[-1].message.startswith("机器验证：修改后未执行 run_test")
+    assert events[-1].message.endswith("done")
     assert len([event for event in events if event.type == "tool_call"]) == 1
 
 
@@ -395,7 +396,8 @@ def test_agent_stops_tools_after_modified_code_passes_full_suite(
 
     events = list(agent.run_stream("fix"))
 
-    assert events[-1].message == "all done"
+    assert events[-1].message.startswith("机器验证：修改后 run_test 完整测试套件通过")
+    assert events[-1].message.endswith("all done")
     assert client.chat.completions.requests[-1]["tool_choice"] == "none"
     assert len(client.chat.completions.requests) == 3
 

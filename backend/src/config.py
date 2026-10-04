@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str | None = None
     llm_model: str = ""
+    llm_reasoning_effort: Literal["low", "high", "max"] | None = None
     llm_timeout_seconds: float = Field(default=60.0, gt=0)
     llm_max_retries: int = Field(default=2, ge=0, le=10)
     agent_token_budget: int = Field(

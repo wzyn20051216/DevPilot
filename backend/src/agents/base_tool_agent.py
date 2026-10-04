@@ -87,6 +87,40 @@ class BaseToolAgent:
         }
 
     @staticmethod
+    def _answer_with_test_evidence(
+        answer: str,
+        *,
+        state: AgentState,
+        last_edit_call: int,
+        last_test_call: int,
+        last_test_targeted: bool,
+    ) -> str:
+        """! @brief 用工具执行记录约束修改后的测试结论。"""
+
+        if last_edit_call == 0:
+            return answer
+        if last_test_call <= last_edit_call or state.test_report is None:
+            notice = "机器验证：修改后未执行 run_test，尚不能确认测试通过。"
+        elif not state.test_report.passed:
+            notice = f"机器验证：最近一次 run_test 未通过（{state.test_report.summary}）。"
+        elif last_test_targeted:
+            notice = "机器验证：目标测试通过，尚未确认完整测试套件通过。"
+        else:
+            notice = "机器验证：修改后 run_test 完整测试套件通过。"
+        return f"{notice}\n\n{answer}"
+
+    @staticmethod
+    def _llm_completion_options() -> dict[str, Any]:
+        """! @brief 仅对显式启用的 DeepSeek 思考模式附加请求参数。"""
+
+        if not settings.llm_model.startswith("deepseek-") or not settings.llm_reasoning_effort:
+            return {}
+        return {
+            "reasoning_effort": settings.llm_reasoning_effort,
+            "extra_body": {"thinking": {"type": "enabled"}},
+        }
+
+    @staticmethod
     def _accumulate_usage(state: AgentState, response: Any) -> None:
         """! @brief 将单次 LLM 请求的 Token 用量累加到 Agent 状态。"""
 
@@ -307,6 +341,9 @@ class BaseToolAgent:
                 allowed_tools=self.allowed_tools,
             )
             full_test_passed = False
+            last_edit_call = 0
+            last_test_call = 0
+            last_test_targeted = False
             # -------------------------
             # 3. Agent Loop
             # -------------------------
@@ -363,12 +400,19 @@ class BaseToolAgent:
                                 ),
                             }
                         )
+                # 本轮实际开放的工具还要在执行层校验；仅缩小发送给模型的
+                # schema 不足以阻止兼容网关返回旧工具调用。
+                active_tool_names = {
+                    definition["function"]["name"]
+                    for definition in active_tool_definitions
+                }
                 response = self.client.chat.completions.create(
                     model=settings.llm_model,
                     messages=messages,
                     tools=active_tool_definitions,
                     tool_choice=tool_choice,
                     temperature=0.2,
+                    **self._llm_completion_options(),
                 )
                 state.llm_seconds += perf_counter() - llm_started
                 # Usage 属于本次 LLM 请求，不包含前几轮，所以每轮都要累加。
@@ -404,6 +448,11 @@ class BaseToolAgent:
                     "role": "assistant",
                     "content": message.content,
                 }
+                # DeepSeek 思考模式与工具调用联用时，后续请求必须带回原始
+                # reasoning_content；只在内部消息中保存，不写入 SSE/Trace。
+                reasoning_content = getattr(message, "reasoning_content", None)
+                if settings.llm_model.startswith("deepseek-") and reasoning_content is not None:
+                    assistant_message["reasoning_content"] = reasoning_content  # type: ignore[typeddict-unknown-key]
                 # OpenAI 的工具调用协议要求：工具结果消息之前，必须先保留
                 # assistant 发出的 tool_calls（含 call id）。下一轮模型会依靠
                 # 这个 id 把每条 observation 对回原来的工具请求。
@@ -447,7 +496,13 @@ class BaseToolAgent:
                 # -------------------------
                 if not message.tool_calls:
                     state.status = "completed"
-                    state.answer = message.content or ""
+                    state.answer = self._answer_with_test_evidence(
+                        message.content or "",
+                        state=state,
+                        last_edit_call=last_edit_call,
+                        last_test_call=last_test_call,
+                        last_test_targeted=last_test_targeted,
+                    )
                     yield AgentEvent(
                         type="final",
                         agent=self.name,
@@ -507,11 +562,18 @@ class BaseToolAgent:
                     # -------------------------
                     tool_started = perf_counter()
                     try:
+                        if active_tool_names and tool_name not in active_tool_names:
+                            raise PermissionError(f"本轮不允许调用工具 {tool_name}")
+                        if tool_choice == "none":
+                            raise PermissionError(f"本轮禁止调用任何工具：{tool_name}")
                         result = execute_tool(
                             tool_name=tool_name,
                             arguments=arguments,
                             repo_path=self.repo_path,
-                            allow_tools=self.allowed_tools,
+                            allow_tools=(
+                                self.allowed_tools.intersection(active_tool_names)
+                                if active_tool_names else self.allowed_tools
+                            ),
                         )
                     except Exception as exc:  # noqa: BLE001
                         # 工具异常也转换成 observation 回传给模型，使模型有机会
@@ -542,11 +604,15 @@ class BaseToolAgent:
                         modified_path = result.get("file_path")
                         if modified_path and modified_path not in state.modified_files:
                             state.modified_files.append(modified_path)
+                        last_edit_call = len(state.tool_calls)
+                        full_test_passed = False
 
                     # 11.2 记录测试报告（run_test 工具）
                     #     统一写进 state.test_report，不再使用不存在的
                     #     state.tests_passed（Pydantic v2 对未声明字段赋值会抛 ValueError）
                     if tool_name == "run_test" and isinstance(result, dict) and "passed" in result:
+                        last_test_call = len(state.tool_calls)
+                        last_test_targeted = bool(arguments.get("target"))
                         state.test_report = TesterOutput(
                             passed=bool(result.get("passed")),
                             summary=(
@@ -556,12 +622,12 @@ class BaseToolAgent:
                             stdout=str(result.get("stdout", "")),
                             stderr=str(result.get("stderr", "")),
                         )
-                        if (
+                        full_test_passed = (
                             state.test_report.passed
-                            and not arguments.get("target")
+                            and not last_test_targeted
                             and bool(state.modified_files)
-                        ):
-                            full_test_passed = True
+                            and last_test_call > last_edit_call
+                        )
 
                     # -------------------------
                     # 12. Tool Result Event
@@ -668,6 +734,7 @@ class BaseToolAgent:
                 tools=tool_definitions,
                 tool_choice="none",
                 temperature=0.0,
+                **self._llm_completion_options(),
             )
             state.llm_seconds += perf_counter() - llm_started
             self._accumulate_usage(state, final_response)
@@ -716,7 +783,13 @@ class BaseToolAgent:
                 return
 
             state.status = "completed"
-            state.answer = final_message.content
+            state.answer = self._answer_with_test_evidence(
+                final_message.content,
+                state=state,
+                last_edit_call=last_edit_call,
+                last_test_call=last_test_call,
+                last_test_targeted=last_test_targeted,
+            )
             yield AgentEvent(
                 type="final",
                 agent=self.name,
