@@ -48,3 +48,26 @@ class ExternalServiceError(DevPilotError):
 
     status_code: ClassVar[int] = 502
     code: ClassVar[str] = "external_service_error"
+
+
+class AuthenticationError(DevPilotError):
+    """! @brief 请求未携带有效 API Key。"""
+
+    status_code: ClassVar[int] = 401
+    code: ClassVar[str] = "unauthenticated"
+    headers: ClassVar[dict[str, str]] = {"WWW-Authenticate": "Bearer"}
+
+
+class QueueFullError(DevPilotError):
+    """! @brief 队列积压超过上限，入队被背压拒绝。
+
+    ``retry_after`` 会写入响应头的 ``Retry-After``，提示调用方稍后重试。
+    ``retry_after`` 为 None 时不带该头部。
+    """
+
+    status_code: ClassVar[int] = 429
+    code: ClassVar[str] = "queue_full"
+
+    def __init__(self, message: str, retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after

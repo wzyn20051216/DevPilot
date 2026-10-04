@@ -9,18 +9,28 @@
 - **心跳（heartbeat）**：存活 Worker 周期性续租，避免长任务被误判为
   崩溃而重复执行；
 - **幂等（idempotency）**：入队靠 ``task_id`` 唯一约束去重；执行靠
-  ``attempts`` 计数 + ``max_attempts`` 上限把反复失败的任务送进死信。
+  ``attempts`` 计数 + ``max_attempts`` 上限把反复失败的任务送进死信；
+- **fencing（令牌）**：每次领取自增 ``fence_token``。旧 Worker 即使还活着，
+  心跳、结算和事件写入都会被令牌校验拒绝，避免"僵尸写入"；
+- **背压（backpressure）**：``queued`` 行数超过 ``task_queue_max_depth`` 时
+  入队抛 ``QueueFullError``（HTTP 429）。
 
-后端可用 ``settings.task_queue_backend`` 在 SQLite 与 Redis 之间切换；
-SQLite 队列不需额外服务；Redis 是非原子、未经生产验收的实验实现。默认执行方式仍为 inline。
+``SQLTaskQueue`` 同时服务 SQLite 与 MySQL（由 ``database_backend`` 决定），
+SQL 差异集中在 ``database.connection`` 的方言工具里。后端可用
+``settings.task_queue_backend`` 在 sqlite / redis 之间切换；默认执行方式仍为 inline。
 """
 
-import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from ..config import settings
-from ..database.connection import get_connection
+from ..database.connection import (
+    IntegrityError,
+    begin_write,
+    for_update_skip_locked,
+    get_connection,
+)
+from ..exceptions import QueueFullError
 
 
 def _now_iso() -> str:
@@ -60,11 +70,13 @@ class QueueEntry:
     lease_expires_at: str | None
     heartbeat_at: str | None
     last_error: str | None
-    created_at: str
-    updated_at: str
+    # 每次领取单调递增；旧 Worker 的写入会被令牌校验拒绝。
+    fence_token: int = 0
+    created_at: str = ""
+    updated_at: str = ""
 
 
-def _row_to_entry(row: sqlite3.Row) -> QueueEntry:
+def _row_to_entry(row) -> QueueEntry:
     """! @brief 把 SQLite 行转换为 QueueEntry，统一做显式类型收窄。"""
     return QueueEntry(
         id=int(row["id"]),
@@ -78,16 +90,18 @@ def _row_to_entry(row: sqlite3.Row) -> QueueEntry:
         lease_expires_at=row["lease_expires_at"],
         heartbeat_at=row["heartbeat_at"],
         last_error=row["last_error"],
+        fence_token=int(row["fence_token"] or 0),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
 
 
-class SQLiteTaskQueue:
-    """! @brief 基于 SQLite 的持久化任务队列。
+class SQLTaskQueue:
+    """! @brief 基于 SQL 的持久化任务队列（SQLite / MySQL）。
 
-    SQLite 同一时刻只有一个写者，配合「单条 UPDATE 语句内嵌子查询领取」
-    的方式避免重复领取；跨表回收和结算仍使用显式事务。
+    SQLite 同一时刻只有一个写者，事务内先 SELECT 再 UPDATE 已足够互斥；
+    MySQL 使用 ``SELECT ... FOR UPDATE SKIP LOCKED`` 跳过被其它 Worker
+    锁住的行，从而支持多 Worker 并发领取而不重复。
     """
 
     def enqueue(
@@ -101,12 +115,17 @@ class SQLiteTaskQueue:
 
         @return True 表示首次入队成功；task_id 已存在时返回 False（幂等，
         不抛异常）。max_attempts 缺省时取全局 ``settings.task_max_attempts``。
+        @exception QueueFullError 排队中的任务数已达 ``task_queue_max_depth``。
         """
         if max_attempts is None:
             max_attempts = settings.task_max_attempts
         now = _now_iso()
         try:
             with get_connection() as conn:
+                # 进写事务后再数排队行数：MySQL 默认 REPEATABLE READ，
+                # 不开事务的读会看到旧快照，无法反映刚提交的积压。
+                begin_write(conn)
+                self._check_depth(conn)
                 conn.execute(
                     """
                     INSERT INTO task_queue (
@@ -130,19 +149,39 @@ class SQLiteTaskQueue:
                         now,
                     ),
                 )
-        except sqlite3.IntegrityError:
-            # task_id 有 UNIQUE 约束，重复入队只会触发 IntegrityError。
+        except IntegrityError:
+            # task_id 有 UNIQUE 约束，重复入队只会触发唯一约束冲突。
             # 幂等语义要求把它当成“已入队”而非错误，直接返回 False。
             return False
         return True
 
+    def _check_depth(self, conn) -> None:
+        """! @brief 背压：排队的任务过多时拒绝新入队。
+
+        MySQL 下这是软上限——两个并发入队可能都读到"还有一个名额"
+        而后同时写入，把队列略微推过阈值。这里的目的是限制积压规模，
+        不是精确配额，因此不做额外加锁。
+        """
+        limit = settings.task_queue_max_depth
+        if limit <= 0:
+            return
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_queue WHERE status = 'queued'"
+        ).fetchone()
+        depth = int(row["n"] if row is not None else 0)
+        if depth >= limit:
+            raise QueueFullError(
+                f"任务队列已满（{depth}/{limit}），请稍后重试",
+                retry_after=max(1, int(settings.task_worker_poll_seconds * 5)),
+            )
+
     def claim(self, worker_id: str) -> QueueEntry | None:
         """! @brief 原子地领取优先级最高的一个可执行任务。
 
-        原子性来源：SQLite 同一时刻只允许一个写者，且整个「查找候选 +
-        更新状态 + 返回结果」封装在一条 UPDATE 语句里，中间不可能被其它
-        连接插入。子查询按 priority 降序、id 升序选出候选，既处理了全新
-        的 queued 任务；领取前隔离租约已到期的 claimed 任务。
+        步骤在同一个写事务内完成：选出候选 → 标记为 claimed 并自增
+        ``attempts`` 与 ``fence_token`` → 读回整行。SQLite 靠"同一时刻
+        只有一个写者"互斥；MySQL 用 ``FOR UPDATE SKIP LOCKED`` 跳过已被
+        其它 Worker 锁住的行，因而多个 Worker 可以并发领取而不重复。
 
         @return 领取到的队列项；没有候选时返回 None。
         """
@@ -150,7 +189,19 @@ class SQLiteTaskQueue:
         now = _now_iso()
         lease = _lease_expiry(now)
         with get_connection() as conn:
-            row = conn.execute(
+            begin_write(conn)
+            candidate = conn.execute(
+                f"""
+                SELECT id
+                FROM task_queue
+                WHERE status = 'queued' AND attempts < max_attempts
+                ORDER BY priority DESC, id
+                LIMIT 1{for_update_skip_locked()}
+                """
+            ).fetchone()
+            if candidate is None:
+                return None
+            conn.execute(
                 """
                 UPDATE task_queue
                 SET
@@ -159,51 +210,96 @@ class SQLiteTaskQueue:
                     lease_expires_at = ?,
                     heartbeat_at = ?,
                     attempts = attempts + 1,
+                    fence_token = fence_token + 1,
                     updated_at = ?
-                WHERE id = (
-                    SELECT id
-                    FROM task_queue
-                    WHERE
-                        status = 'queued' AND attempts < max_attempts
-                    ORDER BY priority DESC, id
-                    LIMIT 1
-                )
-                RETURNING *
+                WHERE id = ?
                 """,
-                (
-                    worker_id,
-                    lease,
-                    now,
-                    now,
-                ),
+                (worker_id, lease, now, now, int(candidate["id"])),
+            )
+            row = conn.execute(
+                "SELECT * FROM task_queue WHERE id = ?",
+                (int(candidate["id"]),),
             ).fetchone()
         if row is None:
             return None
         return _row_to_entry(row)
 
-    def heartbeat(self, worker_id: str, task_id: str) -> bool:
-        """! @brief 续租：只有 claimed_by 匹配当前 Worker 时才生效。
+    def is_current(self, task_id: str, worker_id: str, fence_token: int) -> bool:
+        """! @brief 判断某次领取是否仍然持有该任务。
 
+        执行方在写事件、写检查点或收口状态前调用本方法。令牌按任务单调
+        递增，因此旧 Worker 持有的旧令牌必然与当前值不等——这正是 fencing
+        要拒绝的"僵尸写入"。
+        """
+
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT claimed_by, status, fence_token
+                FROM task_queue
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        return (
+            row["status"] == "claimed"
+            and row["claimed_by"] == worker_id
+            and int(row["fence_token"] or 0) == fence_token
+        )
+
+    def heartbeat(
+        self,
+        worker_id: str,
+        task_id: str,
+        fence_token: int | None = None,
+    ) -> bool:
+        """! @brief 续租：只有当前持有者（且令牌匹配）才生效。
+
+        @param fence_token 领取时拿到的令牌；传入后令牌不匹配即拒绝续租，
+        从而让租约已过期的旧 Worker 无法把自己"续"回合法状态。
         @return True 表示续租成功（租约与心跳时间均刷新）。
         """
         now = _now_iso()
         lease = _lease_expiry(now)
         with get_connection() as conn:
-            cursor = conn.execute(
+            begin_write(conn)
+            owner = conn.execute(
+                """
+                SELECT claimed_by, status, fence_token
+                FROM task_queue
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if not self._owns(owner, worker_id, fence_token):
+                return False
+            conn.execute(
                 """
                 UPDATE task_queue
-                SET
-                    heartbeat_at = ?,
-                    lease_expires_at = ?,
-                    updated_at = ?
-                WHERE
-                    task_id = ?
-                    AND claimed_by = ?
-                    AND status = 'claimed'
+                SET heartbeat_at = ?, lease_expires_at = ?, updated_at = ?
+                WHERE task_id = ?
                 """,
-                (now, lease, now, task_id, worker_id),
+                (now, lease, now, task_id),
             )
-            return cursor.rowcount == 1
+            return True
+
+    @staticmethod
+    def _owns(owner, worker_id: str, fence_token: int | None) -> bool:
+        """! @brief 判断一行队列记录是否仍由指定持有者有效占用。
+
+        租约到期后 ``reclaim_expired`` 会把它置为 dead 并清空 ``claimed_by``，
+        因此即使旧 Worker 还活着、拿着旧令牌，也会在这里被拒绝写入。
+        """
+
+        if owner is None or owner["status"] != "claimed":
+            return False
+        if owner["claimed_by"] != worker_id:
+            return False
+        if fence_token is None:
+            return True
+        return int(owner["fence_token"] or 0) == fence_token
 
     def complete(
         self,
@@ -212,22 +308,32 @@ class SQLiteTaskQueue:
         error: str | None = None,
         *,
         worker_id: str | None = None,
+        fence_token: int | None = None,
     ) -> None:
         """! @brief 任务执行结束后的队列收口。
 
         成功 → done；失败则看 attempts 是否已达上限：未达上限回 queued
         （清空领取字段、保留 last_error 供排查），已达上限进 dead（死信）。
+        持有者或令牌不匹配时直接返回，保证已被回收的任务不会被旧 Worker
+        覆盖成 done。
         """
         now = _now_iso()
         with get_connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            begin_write(conn)
             owner = conn.execute(
-                "SELECT claimed_by, status FROM task_queue WHERE task_id = ?",
+                """
+                SELECT claimed_by, status, fence_token
+                FROM task_queue
+                WHERE task_id = ?
+                """,
                 (task_id,),
             ).fetchone()
-            if owner is None or owner["status"] != "claimed":
-                return
-            if worker_id is not None and owner["claimed_by"] != worker_id:
+            # 调用方给了 worker_id 就做完整持有权校验；没给则只要求仍是 claimed，
+            # 保留历史调用方式（例如 API 侧只做尽力收口）。
+            if worker_id is None:
+                if owner is None or owner["status"] != "claimed":
+                    return
+            elif not self._owns(owner, worker_id, fence_token):
                 return
             if succeeded:
                 conn.execute(
@@ -284,14 +390,17 @@ class SQLiteTaskQueue:
                 )
 
     def reclaim_expired(self) -> int:
-        """! @brief 隔离过期租约并标记中断，避免无 fencing 的自动重复执行。
+        """! @brief 隔离过期租约并标记中断，避免自动重复执行。
 
         租约失效不代表旧进程已停止。必须确认旧 Worker 停止后再显式 resume；
         当前实现不承诺自动故障切换或工具副作用恰好执行一次。
+
+        隔离动作会把 ``claimed_by`` 清空并置为 dead，因此旧 Worker 之后
+        无论续租、结算还是写事件都会被 fencing 校验拒绝。
         """
         now = _now_iso()
         with get_connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            begin_write(conn)
             conn.execute(
                 """UPDATE tasks SET status = 'interrupted', updated_at = ?
                 WHERE status IN ('running', 'cancelling') AND id IN (
@@ -373,13 +482,17 @@ class SQLiteTaskQueue:
         return result
 
 
+# 历史名称：队列实现本就同时服务 SQLite 与 MySQL，类名改成 SQLTaskQueue 后
+# 保留别名，避免已有调用方和测试需要跟着改名。
+SQLiteTaskQueue = SQLTaskQueue
+
+
 class RedisTaskQueue:
     """! @brief 基于 Redis 的持久化任务队列（可选后端）。
 
-    与 SQLiteTaskQueue 暴露同一接口，但面向多机高吞吐场景。此处为保持
-    精简，用 ``ZPOPMAX`` + 哈希字段的近似的实现，生产环境应改用 Lua 脚本
-    保证「弹出一条 + 更新状态」整体原子，并配合 Redis Streams/消费者组
-    获得更可靠的交付语义。本实现不做单元测试，语义与局限见各方法注释。
+    与 SQLTaskQueue 暴露同一接口，但面向多机高吞吐场景。每个操作都是一段
+    Lua 脚本，在 Redis 单线程内整体执行，因此"读-判断-写"不会和其它 Worker
+    交错；租约与 fencing 令牌的语义和 SQL 版保持一致。
     """
 
     _INDEX = "devpilot:tq:index"
@@ -623,17 +736,17 @@ class RedisTaskQueue:
         return result
 
 
-def get_task_queue() -> SQLiteTaskQueue | RedisTaskQueue:
+def get_task_queue() -> SQLTaskQueue | RedisTaskQueue:
     """! @brief 按 ``settings.task_queue_backend`` 分派队列实现。
 
-    - ``sqlite`` → SQLiteTaskQueue；
+    - ``sqlite`` → SQLTaskQueue，底层跟随 ``database_backend``（SQLite 或 MySQL）；
     - ``redis`` → RedisTaskQueue；
     - ``inline`` → 抛 ValueError，因为 inline 模式在 API 进程内直接起线程，
       根本不需要（也不该）走队列。
     """
     backend = settings.task_queue_backend
     if backend == "sqlite":
-        return SQLiteTaskQueue()
+        return SQLTaskQueue()
     if backend == "redis":
         return RedisTaskQueue()
     if backend == "inline":
