@@ -79,3 +79,5 @@ npm run build
 
 
 2026-10-05 独立检出验证：不携带 backend/.env 和已有业务数据库，修正旧 Redis 测试的临时数据库 fixture 及工具策略测试的模拟客户端后，提交代码完整套件 **191 项通过、0 跳过**。工作树 197 项与提交版本的差额是已有但未提交的 Agent 测试，未把这些改动混入本轮提交。发现测试占位任务曾落入本机库后，仅撤回本轮时间范围、指定测试路径且无事件/业务关联的占位记录，并保存恢复副本；后续测试全部使用临时库。
+
+收尾环境复核：原有演示容器一度返回 SQLite unable to open database file；宿主库 quick_check=ok、27 条实验记录齐全。直接读取与连接重试后，原容器 /readyz 返回 200、health 恢复 healthy；未重启或更改三条 2026-09-22 遗留 running 任务。临时 MySQL/Redis 容器、认证浏览器与本机验证服务已关闭。既有容器采用 Windows bind mount，后续按部署文档使用 Linux named volume 或 MySQL，避免不同操作系统同时写同一 SQLite WAL 文件。
