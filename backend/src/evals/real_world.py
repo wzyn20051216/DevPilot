@@ -25,6 +25,7 @@ from ..sandbox.docker_runner import SandboxProfile, use_sandbox_profile
 from ..tools.test_tool import run_tests
 from ..tools.write_tool import use_syntax_guard, use_write_guard
 from .dataset import PROJECT_ROOT
+from .pytest_output import strip_ansi_codes
 from .runner import VARIANTS, collect_event_metrics, collect_timing, collect_usage
 
 # 使用 /rows 分页端点而非 first-rows：后者只返回首屏行，无法覆盖 dev split
@@ -509,7 +510,7 @@ def _failed_pytest_nodes(result: dict[str, Any], normalize: bool = True) -> list
     """
 
     nodes: list[str] = []
-    for line in str(result.get("stdout", "")).splitlines():
+    for line in strip_ansi_codes(str(result.get("stdout", ""))).splitlines():
         for prefix in ("FAILED ", "ERROR "):
             if line.startswith(prefix):
                 node = line.removeprefix(prefix).split(" - ", 1)[0].strip()
