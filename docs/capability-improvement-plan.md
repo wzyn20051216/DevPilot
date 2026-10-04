@@ -50,6 +50,8 @@ OpenAI 建立 SWE-bench Verified 时，由 93 名开发者标注了 1,699 题：
 
 7 个已完成 Verified 配对实例的离线决策 smoke 产生 2 个 `outline_only`、1 个 `probe_only` 和 4 个 `standard`。该结果只验证决策分支，尚不是端到端收益证据。
 
+后续两题端到端 pilot（Run ID `138f9f61ed6c468e941b1a685e111616`）中，基线与动态策略都是 1/2 通过，动态组 Token 反而多 3.9%。`code_outline` 被真实调用，但 `probe_only` 实例没有调用 `protocol_probe`，而是在编辑后以 `run_command` 完成行为探针。这证明路由已能影响轨迹，但“先探针后编辑”仍只是提示词约束，不是可依赖的运行时不变式。
+
 ## 6. 还没做、按收益排序的方向
 
 1. **多补丁采样 + 测试选择**（Agentless 证据最强，+6.3 个百分点）：每题生成 N 个候选补丁，用回归测试和 Agent 自己写的复现测试筛选，再多数投票。成本约为 N 倍 Token。

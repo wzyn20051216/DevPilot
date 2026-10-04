@@ -1,0 +1,5 @@
+run_id,instance_id,variant,strategy_mode,success,tests_passed,iterations,tool_calls,prompt_tokens,completion_tokens,total_tokens,elapsed_seconds,patch_bytes,code_outline_calls,protocol_probe_calls,run_command_calls,run_test_calls,unexpected_failures
+138f9f61ed6c468e941b1a685e111616,pylint-dev__pylint-4970,single_no_rag,,false,false,14,15,93416,5658,99074,120.742234,527,0,3,0,1,tests/checkers/unittest_similar.py::test_set_duplicate_lines_to_zero
+138f9f61ed6c468e941b1a685e111616,pylint-dev__pylint-4970,single_adaptive,outline_only,false,false,10,12,92995,11898,104893,98.666318,733,1,0,0,0,tests/checkers/unittest_similar.py::test_set_duplicate_lines_to_zero
+138f9f61ed6c468e941b1a685e111616,pydata__xarray-6744,single_no_rag,,true,true,14,16,142878,12220,155098,304.815268,1104,0,1,0,2,
+138f9f61ed6c468e941b1a685e111616,pydata__xarray-6744,single_adaptive,probe_only,true,true,14,16,151851,7452,159303,157.112591,1293,0,0,2,1,

@@ -215,6 +215,26 @@ docker run --rm --mount "type=bind,source=E:/desktop/DevPilot/backend/data,targe
 
 分支分布为 `outline_only=2`、`probe_only=1`、`standard=4`；7/7 都有非空 `mode` 和 `reasons`。这是决策边界的 smoke，**没有调用 LLM、没有生成新补丁，因此不是修复率实验**。下一步若要比较效果，应冻结阈值后在新题上对 `single_no_rag` 和 `single_adaptive` 做配对重复。
 
+### 两题端到端 pilot
+
+同日使用 `deepseek-v4-flash` 对现有 Verified 题做了一次真实配对运行（Run ID `138f9f61ed6c468e941b1a685e111616`）。每题分别运行 `single_no_rag` 和 `single_adaptive` 一次，使用相同模型、14 轮上限、仓库基线与独立 verifier。原始摘要见 [adaptive pilot CSV](experiments/adaptive_pilot_2026-10-04.csv)。
+
+| 实例 | 变体 | 决策 | verifier | 轮次 / 工具 | Total Token | Agent 耗时 |
+|---|---|---|---:|---:|---:|---:|
+| pylint-4970 | `single_no_rag` | 静态基线 | 失败 | 14 / 15 | 99,074 | 120.7 s |
+| pylint-4970 | `single_adaptive` | `outline_only` | 失败 | 10 / 12 | 104,893 | 98.7 s |
+| xarray-6744 | `single_no_rag` | 静态基线 | 通过 | 14 / 16 | 155,098 | 304.8 s |
+| xarray-6744 | `single_adaptive` | `probe_only` | 通过 | 14 / 16 | 159,303 | 157.1 s |
+
+结果是基线与动态策略各通过 1/2，**这次 pilot 没有观察到成功率改善**。动态组合计 264,196 Token，比基线 254,172 多 3.9%；Agent 阶段耗时合计少 39.9%，但只有单次串行运行，受模型服务延迟和随机性影响，不能当成稳定的性能收益。
+
+工具轨迹揭示了两个比成败更重要的事实：
+
+- `pylint` 动态组确实调用 1 次 `code_outline`，但未调用 `run_test`，独立 verifier 与基线一样失败在 `test_set_duplicate_lines_to_zero`。结构导航被采用，但不足以保证完成验证闭环。
+- `xarray` 动态组命中 `probe_only` 并最终修复成功，但模型没有调用 `protocol_probe`；它在首次编辑后用两次 `run_command` 执行了行为探针。因此当前 `enforce_probe` 是提示词级约束，不是工具层硬性门禁；“编辑前必须探针”尚未被机器保证。
+
+因此当前最稳妥的判断是：路由器能改变工具暴露和行为轨迹，但两题单次证据不支持宣称质量提升。如果继续优化，应优先将“首次编辑前已有行为观测”变成可观测的运行时状态，再用新题做至少 3 次重复配对。
+
 ## 项目价值判断
 
 当前项目已经具备 AI 应用／Agent 实习和校招作品的核心证据：模型能调用真实工具修改代码，机器测试拥有最终裁决权；任务执行与浏览器连接解耦；事件、工具耗时和 Token 可追踪；实验能保存配置、补丁、轨迹与独立验证结果；并且真实仓库评测暴露了失败案例，而非只展示成功 Demo。

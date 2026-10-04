@@ -54,6 +54,8 @@ uv run python -m backend.src.evals.runner add_bug --variant single_no_rag
 
 详细方法、统计表、置信区间和图表见 [`experiments/formal_benchmark_2026-09-25.md`](experiments/formal_benchmark_2026-09-25.md)，逐次原始数据见 [`experiments/formal_benchmark_2026-09-25.csv`](experiments/formal_benchmark_2026-09-25.csv)。2026-09-23 的四组单题 pilot 仍保留在 [`experiments/pilot_add_bug.csv`](experiments/pilot_add_bug.csv)，仅用于评测链路冒烟验证。
 
+2026-10-04 对动态策略路由运行了 2 个 SWE-bench Verified 实例 × 2 个变体 × 1 次的端到端 pilot（Run ID `138f9f61ed6c468e941b1a685e111616`）。`single_no_rag` 与 `single_adaptive` 均为 1/2 通过，该单次小样本未观察到成功率改善。逐次指标见 [`experiments/adaptive_pilot_2026-10-04.csv`](experiments/adaptive_pilot_2026-10-04.csv)，限制与轨迹归因见 [`current-evaluation.md`](current-evaluation.md)。
+
 ## 可靠性修复回归
 
 正式实验暴露了多 Agent 在「代码已通过测试、但结构化输出或收尾失败」上的问题。修复包括：
@@ -74,4 +76,4 @@ uv run python -m backend.src.evals.runner add_bug --variant single_no_rag
 - 9 个 case 足以展示完整实验方法，但还不足以代表所有真实软件工程任务。
 - 模型服务可能不保证完全确定性，因此正式结果至少重复 3 次。
 - Wilcoxon 检验在小样本下统计功效有限，报告时必须同时给出效应量和置信区间。
-- 当前任务均为 Python 微型仓库；后续可加入 TypeScript、真实开源 Issue 和更大上下文仓库。
+- 当前 12 个合成任务已包含 TypeScript、Java 和 Python 跨模块用例，但真实 Issue 评测仍以 Python 仓库为主，且合成用例不能替代未见过的真实任务。
