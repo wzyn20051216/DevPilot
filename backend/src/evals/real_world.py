@@ -71,6 +71,9 @@ DATASETS: dict[str, tuple[str, str]] = {
     "lite": ("SWE-bench/SWE-bench_Lite", "dev"),
     "verified": ("SWE-bench/SWE-bench_Verified", "test"),
 }
+# 这些仓库的官方测试不是 pytest 节点（Django 用 runtests.py，SymPy 用 bin/test），
+# 当前 verifier 与 Agent 的 run_test 都只支持 pytest，抽样时可用 --pytest-only 排除。
+NON_PYTEST_REPOS = frozenset({"django/django", "sympy/sympy"})
 # 真实评测额外支持增强策略变体；合成 runner 的 VARIANTS 保持不变。
 REAL_VARIANTS: tuple[str, ...] = (*VARIANTS, "single_enhanced")
 REAL_EVAL_ROOT = PROJECT_ROOT / "data" / "real_world_evals"
@@ -798,6 +801,11 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=0, help="--pool 分层抽样种子")
     parser.add_argument(
+        "--pytest-only",
+        action="store_true",
+        help="--pool 抽样前排除测试不是 pytest 节点的仓库（见 NON_PYTEST_REPOS）",
+    )
+    parser.add_argument(
         "--repeats",
         type=int,
         default=1,
@@ -812,10 +820,15 @@ def main() -> None:
     args = parser.parse_args()
     if args.pool is not None:
         # --pool 显式传入时，从真实 dev split 分层采样，覆盖尽量多的仓库。
+        pool_dataset = load_swebench(args.dataset)
+        if args.pytest_only:
+            pool_dataset = {
+                key: value
+                for key, value in pool_dataset.items()
+                if value.repo not in NON_PYTEST_REPOS
+            }
         instance_ids = tuple(
-            select_stratified_instances(
-                load_swebench(args.dataset), args.pool, seed=args.seed
-            )
+            select_stratified_instances(pool_dataset, args.pool, seed=args.seed)
         )
     else:
         instance_ids = tuple(args.instances or DEFAULT_INSTANCES)
