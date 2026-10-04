@@ -2,16 +2,18 @@
 
 import argparse
 import hashlib
+import io
 import json
 import random
 import shutil
 import subprocess
+import tarfile
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any
 from uuid import uuid4
 
@@ -77,6 +79,7 @@ NON_PYTEST_REPOS = frozenset({"django/django", "sympy/sympy"})
 # 真实评测额外支持增强策略变体；合成 runner 的 VARIANTS 保持不变。
 REAL_VARIANTS: tuple[str, ...] = (*VARIANTS, "single_enhanced")
 REAL_EVAL_ROOT = PROJECT_ROOT / "data" / "real_world_evals"
+DATASET_CACHE_ROOT = PROJECT_ROOT / "data" / "swebench_datasets"
 REPOSITORY_CACHE_ROOT = PROJECT_ROOT / "data" / "repository_cache"
 PROTECTED_PATH_PREFIXES = ("tests/", "test/")
 PROTECTED_CONFIG_NAMES = {
@@ -122,6 +125,14 @@ def _sandbox_profile(instance: SweBenchInstance) -> SandboxProfile:
         command_prefix=(
             "export PATH=/opt/miniconda3/envs/testbed/bin:$PATH",
             "export PYTHONDONTWRITEBYTECODE=1",
+            # 沙箱只读挂载 /testbed，根文件系统也只读；把测试框架常写的目录
+            # 重定向到 tmpfs。否则 hypothesis 写 /testbed/.hypothesis 失败发出
+            # 警告，被 astropy 的 filterwarnings=error 升级为收集错误
+            # （astropy-13579 实测）；pydicom 写 /root/.pydicom 同理。
+            "export HOME=/tmp",
+            "export XDG_CACHE_HOME=/tmp/.cache",
+            "export MPLCONFIGDIR=/tmp/.matplotlib",
+            "export HYPOTHESIS_STORAGE_DIRECTORY=/tmp/.hypothesis",
         ),
         mount_target="/testbed",
     )
@@ -133,11 +144,47 @@ def load_swebench_lite_dev() -> dict[str, SweBenchInstance]:
     return load_swebench("lite")
 
 
+def _test_nodes(value: Any) -> tuple[str, ...]:
+    """! @brief 解析 FAIL_TO_PASS/PASS_TO_PASS；部分数据集版本存为 JSON 字符串。"""
+
+    if not value:
+        return ()
+    if isinstance(value, str):
+        value = json.loads(value)
+    return tuple(str(item) for item in value)
+
+
+def _fetch_rows(query: str) -> dict[str, Any]:
+    """! @brief 带重试地读取一页数据集；网络被镜像下载占满时握手会偶发超时。"""
+
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(f"{DATASET_API}?{query}", timeout=60) as response:
+                return json.load(response)
+        except OSError:
+            if attempt == 3:
+                raise
+            sleep(5 * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
 def load_swebench(dataset_key: str = "lite") -> dict[str, SweBenchInstance]:
-    """! @brief 分页读取 DATASETS 中指定数据集与 split 的全部实例。"""
+    """! @brief 分页读取 DATASETS 中指定数据集与 split 的全部实例。
+
+    首次读取后把原始行缓存到 DATASET_CACHE_ROOT，之后评测复用同一份字节，
+    保证可复现，也避免每次运行都依赖外网。
+    """
 
     dataset_name, split = DATASETS[dataset_key]
+    cache_path = DATASET_CACHE_ROOT / f"{dataset_key}.json"
+    if cache_path.exists():
+        raw_rows = json.loads(cache_path.read_text(encoding="utf-8"))
+        return {
+            instance.instance_id: instance
+            for instance in (_instance_from_row(row) for row in raw_rows)
+        }
     instances: dict[str, SweBenchInstance] = {}
+    raw_rows: list[dict[str, Any]] = []
     offset = 0
     length = 100
     while True:
@@ -150,29 +197,37 @@ def load_swebench(dataset_key: str = "lite") -> dict[str, SweBenchInstance]:
                 "length": length,
             }
         )
-        with urllib.request.urlopen(f"{DATASET_API}?{query}", timeout=30) as response:
-            payload = json.load(response)
+        payload = _fetch_rows(query)
 
         rows = payload.get("rows") or []
         for wrapped in rows:
             row = wrapped["row"]
-            instance = SweBenchInstance(
-                instance_id=str(row["instance_id"]),
-                repo=str(row["repo"]),
-                base_commit=str(row["base_commit"]),
-                problem_statement=str(row["problem_statement"]),
-                gold_patch=str(row["patch"]),
-                test_patch=str(row["test_patch"]),
-                fail_to_pass=tuple(row.get("FAIL_TO_PASS") or ()),
-                pass_to_pass=tuple(row.get("PASS_TO_PASS") or ()),
-            )
+            raw_rows.append(row)
+            instance = _instance_from_row(row)
             instances[instance.instance_id] = instance
         total = payload.get("num_rows_total")
         # 没有更多行，或已拉满官方声明的总行数时停止；total 缺失时退回仅按空行判断。
         if not rows or (total is not None and len(instances) >= int(total)):
             break
         offset += length
+    DATASET_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(raw_rows, ensure_ascii=False), encoding="utf-8")
     return instances
+
+
+def _instance_from_row(row: dict[str, Any]) -> SweBenchInstance:
+    """! @brief 把数据集原始行转换为评测所需字段。"""
+
+    return SweBenchInstance(
+        instance_id=str(row["instance_id"]),
+        repo=str(row["repo"]),
+        base_commit=str(row["base_commit"]),
+        problem_statement=str(row["problem_statement"]),
+        gold_patch=str(row["patch"]),
+        test_patch=str(row["test_patch"]),
+        fail_to_pass=_test_nodes(row.get("FAIL_TO_PASS")),
+        pass_to_pass=_test_nodes(row.get("PASS_TO_PASS")),
+    )
 
 
 def select_stratified_instances(
@@ -304,7 +359,58 @@ def create_real_workspace(
             "真实评测工作区在创建后不干净，已终止本次评测: "
             + residual[:500]
         )
+    _overlay_build_artifacts(instance, destination)
     return destination
+
+
+# 只复制被 git 忽略的构建产物（编译出的 .so、生成的 _version.py、egg-info 等），
+# 排除字节码缓存与顶层 build/ 中间文件。
+_ARTIFACT_EXPORT_SCRIPT = (
+    "cd /testbed && git ls-files -z --others --ignored --exclude-standard"
+    r" | grep -zv -e '__pycache__' -e '^build/' -e '\.pyc$'"
+    " | tar --null --no-recursion -T - -cf -"
+)
+
+
+def _overlay_build_artifacts(instance: SweBenchInstance, destination: Path) -> int:
+    """! @brief 把官方镜像 /testbed 中被 git 忽略的构建产物覆盖到工作区。
+
+    工作区挂载到 /testbed 时会盖住镜像里已编译好的源码树。astropy、
+    matplotlib、scikit-learn 等含 C 扩展或生成文件的仓库因此在导入阶段就失败
+    （astropy-13579 实测：缺少 _version.py 与 17 个 .so）。这些文件被 git
+    忽略，不会进入候选补丁 diff。
+
+    @return 实际写入的文件数；镜像不可用时返回 0，交由后续校准判定。
+    """
+
+    completed = subprocess.run(
+        [
+            "docker", "run", "--rm", "--network", "none",
+            "--entrypoint", "bash", instance.image, "-c", _ARTIFACT_EXPORT_SCRIPT,
+        ],
+        capture_output=True,
+        timeout=600,
+        check=False,
+    )
+    if completed.returncode != 0 or not completed.stdout:
+        return 0
+    root = destination.resolve()
+    written = 0
+    with tarfile.open(fileobj=io.BytesIO(completed.stdout)) as archive:
+        for member in archive.getmembers():
+            # 只落地普通文件，拒绝链接与越界路径，保持与 resolve_safe_path 同样的边界。
+            if not member.isfile():
+                continue
+            target = (root / member.name).resolve()
+            if not target.is_relative_to(root):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is None:
+                continue
+            target.write_bytes(source.read())
+            written += 1
+    return written
 
 
 def _apply_patch(workspace: Path, patch: str) -> None:
