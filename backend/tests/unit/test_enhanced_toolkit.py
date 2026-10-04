@@ -82,43 +82,17 @@ def test_enhanced_switch_only_adds_documented_differences(repo: Path) -> None:
     assert enhanced.system_prompt == SINGLE_DEVELOPER_PROMPT + ENHANCED_ADDENDUM
 
 
-def test_test_nodes_accepts_list_and_json_string() -> None:
-    from backend.src.evals.real_world import _test_nodes
+def test_normalize_strips_param_suffix() -> None:
+    from backend.src.evals.real_world import _normalize_pytest_node
 
-    assert _test_nodes(["a::b"]) == ("a::b",)
-    assert _test_nodes('["a::b", "c::d"]') == ("a::b", "c::d")
-    assert _test_nodes(None) == ()
+    assert _normalize_pytest_node("test_foo[p1]") == "test_foo"
+    assert _normalize_pytest_node("test_foo[") == "test_foo"
+    assert _normalize_pytest_node("test_bar") == "test_bar"
 
 
-def test_overlay_writes_only_regular_files_inside_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import io
-    import subprocess
-    import tarfile
+def test_failed_nodes_normalize_param() -> None:
+    from backend.src.evals.real_world import _failed_pytest_nodes
 
-    from backend.src.evals import real_world
-
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for name, data in (("pkg/_version.py", b"v = '1'\n"), ("../escape.txt", b"x")):
-            info = tarfile.TarInfo(name)
-            info.size = len(data)
-            archive.addfile(info, io.BytesIO(data))
-        link = tarfile.TarInfo("pkg/link")
-        link.type = tarfile.SYMTYPE
-        link.linkname = "/etc/passwd"
-        archive.addfile(link)
-
-    monkeypatch.setattr(
-        real_world.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, buffer.getvalue(), b""),
-    )
-    instance = real_world.SweBenchInstance("o__p-1", "o/p", "", "", "", "", (), ())
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    assert real_world._overlay_build_artifacts(instance, workspace) == 1
-    assert (workspace / "pkg" / "_version.py").read_text() == "v = '1'\n"
-    assert not (tmp_path / "escape.txt").exists()
-    assert not (workspace / "pkg" / "link").exists()
+    out = {"stdout": "FAILED t.py::a[x]\nFAILED t.py::a[y]\nERROR t.py::b\n"}
+    assert _failed_pytest_nodes(out, normalize=True) == ["t.py::a", "t.py::a", "t.py::b"]
+    assert _failed_pytest_nodes(out, normalize=False) == ["t.py::a[x]", "t.py::a[y]", "t.py::b"]

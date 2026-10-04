@@ -342,6 +342,10 @@ def create_real_workspace(
     # 就要切到 base_commit）。对大仓库（pydicom 541 文件）省掉一次完整工作树
     # 重写，把「clone + checkout」从 300 秒超时降到约 20 秒。
     _run_git(["clone", "--no-hardlinks", "--no-checkout", str(cache), str(destination)])
+    # 工作区不需要 remote：删除继承自 bare mirror 的 origin（指向 GitHub），
+    # 避免测试框架或 Git 钩子隐式触发 fetch，在沙箱禁网下退出 128
+    # （pallets-flask-5014 r2 实测）。工作区所需的全部提交已经在本地。
+    _run_git(["remote", "remove", "origin"], cwd=destination)
     # Windows 全局 core.autocrlf=true 会把工作树写成 CRLF，官方 test_patch
     # （LF）在校准阶段的 git apply 直接失败（sqlfluff-1763 实测；其余仓库因
     # .gitattributes 屏蔽换行转换而幸免）。评测工作树必须与 blob 字节一致：
@@ -485,29 +489,30 @@ def _verification_files(instance: SweBenchInstance) -> list[str]:
 
 
 def _normalize_pytest_node(node: str) -> str:
-    """! @brief 归一化 pytest 节点名，去掉参数化测试的 ``[...]`` 后缀。
+    """! @brief 归一化 pytest 节点名到匹配粒度，用于与 FAIL_TO_PASS 比对。
 
-    参数化测试（如 ``test_string_format_uninferable["{:4x}"]``）在失败摘要里
-    会带上 ``[参数]`` 后缀，而 SWE-bench 的 FAIL_TO_PASS 存的是不带后缀的
-    ``file::Class::test_name``。若不做归一化，``issubset`` 会匹配失败，导致
-    参数化实例被误判为「基线未失败」（astroid-1866 实测）。
+    参数化测试（如 ``test_foo[param]``）在失败摘要里会带上 ``[...]`` 后缀，而
+    SWE-bench 的 FAIL_TO_PASS 存的是不带后缀的 ``file::Class::test_foo``。
+    此函数去掉后缀以匹配基线节点名；同时处理换行截断导致的不完整后缀
+    ``test_foo[``（astroid-1866 实测）。
     """
 
     return node.split("[", 1)[0]
 
 
-def _failed_pytest_nodes(result: dict[str, Any]) -> list[str]:
-    """! @brief 从 pytest 终端摘要提取失败或错误节点（参数化后缀已归一化）。"""
+def _failed_pytest_nodes(result: dict[str, Any], normalize: bool = True) -> list[str]:
+    """! @brief 从 pytest 终端摘要提取失败或错误节点。
+
+    @param normalize 是否归一化节点名（去掉参数化后缀）；用于与 FAIL_TO_PASS
+                     比对时必须归一化，用于报告失败列表时保留原始名称。
+    """
 
     nodes: list[str] = []
     for line in str(result.get("stdout", "")).splitlines():
         for prefix in ("FAILED ", "ERROR "):
             if line.startswith(prefix):
-                nodes.append(
-                    _normalize_pytest_node(
-                        line.removeprefix(prefix).split(" - ", 1)[0].strip()
-                    )
-                )
+                node = line.removeprefix(prefix).split(" - ", 1)[0].strip()
+                nodes.append(_normalize_pytest_node(node) if normalize else node)
                 break
     return nodes
 
@@ -540,10 +545,11 @@ def verify_real_patch(
     # 老项目测试通过全局状态互相影响；只在最终判分时忽略这些已知失败。
     targets = _verification_files(instance)
     result = _run_verification_targets(instance, verifier, targets)
-    failed_nodes = _failed_pytest_nodes(result)
-    unexpected_failures = set(failed_nodes).difference(excluded_targets)
+    failed_nodes_normalized = _failed_pytest_nodes(result, normalize=True)
+    failed_nodes_raw = _failed_pytest_nodes(result, normalize=False)
+    unexpected_failures = set(failed_nodes_normalized).difference(excluded_targets)
     calibrated_pass = bool(result["passed"]) or (
-        bool(failed_nodes)
+        bool(failed_nodes_normalized)
         and not unexpected_failures
         and not bool(result.get("timed_out"))
     )
@@ -551,9 +557,12 @@ def verify_real_patch(
         "passed": bool(targets) and calibrated_pass,
         "targets": targets,
         "ignored_environment_failures": [
-            node for node in failed_nodes if node in set(excluded_targets)
+            node for node in failed_nodes_normalized if node in set(excluded_targets)
         ],
-        "unexpected_failures": sorted(unexpected_failures),
+        "unexpected_failures": sorted(
+            raw for raw, norm in zip(failed_nodes_raw, failed_nodes_normalized)
+            if norm in unexpected_failures
+        ),
         "results": [result],
     }
 
