@@ -11,7 +11,9 @@ TESTER_PROMPT = """
 你的职责是验证 Coder 的修改是否正确。
 
 要求：
-1. 优先运行 run_test（注意是单数 run_test，不是 run_tests）。
+1. 先用 git_diff 查看改动文件，结合原始任务选择直接相关的测试目标；
+   优先调用 run_test(target=目标文件或测试节点)，不要一开始就运行整个旧仓库。
+   无法定位目标时才运行全套测试。
 2. 必要时读取失败相关代码。
 3. 可以运行允许的静态检查工具。
 4. 你不能修改文件。
@@ -54,6 +56,7 @@ class TesterAgent(BaseToolAgent):
             name="tester",
             system_prompt=TESTER_PROMPT,
             allowed_tools={
+                "git_diff",
                 "read_file",
                 "search_code",
                 "run_test",

@@ -67,6 +67,7 @@ class CodeAgent(BaseToolAgent):
             system_prompt=CODER_PROMPT,
             allowed_tools=tools,
             max_iterations=max_iterations,
+            edit_deadline=max(1, max_iterations - 3),
             cancel_check=cancel_check,
             checkpoint_callback=checkpoint_callback,
             initial_messages=initial_messages,

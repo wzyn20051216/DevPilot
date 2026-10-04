@@ -322,9 +322,9 @@ class DevPilotOrchestrator:
         # 让 while 条件基于**最新**的测试结果，而不是第一次那个 False。
         #---------------
         tester_events, state.test_report = self._run_tester(
-            "请验证当前代码修改。"
-            "运行测试，并根据真实测试结果"
-            "判断本次修改是否通过。"
+            f"原始任务：{question}\n"
+            "请先查看改动，运行与任务及改动直接相关的测试；"
+            "根据机器结果判断本次修改是否通过。"
         )
         for event in tester_events:
             yield event
@@ -371,7 +371,8 @@ class DevPilotOrchestrator:
             # 2. 关键：修复后重新跑 tester，刷新 state.test_report，
             #    否则 while 条件永远停留在第一次的 False，循环会空转。
             tester_events, state.test_report = self._run_tester(
-                "请重新运行测试，"
+                f"原始任务：{question}\n"
+                "请重新运行与任务及改动直接相关的测试，"
                 "判断刚才的修复是否让测试通过。"
             )
             for event in tester_events:

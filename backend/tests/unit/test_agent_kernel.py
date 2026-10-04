@@ -18,6 +18,7 @@ from pytest import MonkeyPatch
 
 from backend.src.agents import base_tool_agent
 from backend.src.agents.base_tool_agent import BaseToolAgent
+from backend.src.agents.code_agent import CodeAgent
 from backend.src.evals import runner
 from backend.src.tools import protocol_probe
 
@@ -387,6 +388,14 @@ def test_edit_deadline_rejects_unadvertised_search_tool(
     denied = next(event for event in events if event.type == "tool_result")
     assert denied.data["succeeded"] is False
     assert "本轮不允许调用工具" in denied.data["result_preview"]
+
+
+def test_multi_agent_coder_reserves_rounds_for_editing(monkeypatch: MonkeyPatch) -> None:
+    """! @brief 多 Agent Coder 在轮数耗尽前进入执行层编辑门禁。"""
+
+    monkeypatch.setattr(base_tool_agent, "create_client", lambda: object())
+    coder = CodeAgent(repo_path=".", max_iterations=8, enable_rag=False)
+    assert coder.edit_deadline == 5
 
 
 # ---------------------------------------------------------------
