@@ -9,11 +9,11 @@
 
 ## 数据集
 
-- 总数：9 个可执行 Python 修复任务。
+- 当前总数：12 个合成任务，包含旧版 9 个 Python 任务与新增 TypeScript、Java、Python 跨模块任务各 1 个。以下难度和类别分布仅描述旧版 9 题。
 - 难度：easy、medium、hard 各 3 个。
 - 类别：bugfix 2、configuration 2、cross_module 2、validation 2、feature 1。
 - 验收：每个任务由独立 pytest verifier 判定，Agent 的文字声明不计为通过。
-- 基线审计：9/9 个错误版 fixture 初始测试失败，结构检查全部通过。
+- 历史基线审计：旧版 9/9 错误版 fixture 初始测试失败。当前集以重新运行 audit 的结果为准。
 - 数据集指纹：以 `backend/benchmarks/audit_report.json` 中的 `dataset_sha256` 为准。
 
 ## 运行方法
@@ -22,7 +22,7 @@
 # 先做零成本数据集审计
 uv run python -m backend.src.evals.audit
 
-# 正式运行：9 cases x 4 variants x 3 repeats = 108 个 Agent 任务
+# 当前完整运行：12 cases x 4 variants x 3 repeats = 144 个 Agent 任务
 uv run python -m backend.src.evals.runner --full --repeats 3
 ```
 
@@ -42,6 +42,8 @@ uv run python -m backend.src.evals.runner add_bug --variant single_no_rag
 `success` 要求 verifier 通过且执行协议中没有 error 事件；`tests_passed` 只表示最终代码通过独立测试。二者分开可识别“代码碰巧修好但 Agent 流程异常”的情况。
 
 ## 已完成正式实验
+
+以下是旧代码、旧 9 题数据集的历史实验，不代表当前版本已重新跑过完整矩阵。
 
 2026-09-25 已完成 `9 cases x 4 variants x 3 repeats = 108` 次真实 LLM 评测：
 

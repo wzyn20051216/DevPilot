@@ -26,7 +26,7 @@
   → 回到原始代码，只把 Issue 和仓库交给 Agent
   → Agent 读取代码、修改实现、运行受控测试
   → 独立 verifier 丢弃候选测试改动，只验证生产代码补丁
-  → 官方目标测试全部通过，才记为成功
+  → 目标测试文件经自研 verifier 判定通过（可能排除已知环境失败），才记为成功
 ```
 
 前两步叫**环境校准**，不调用模型，也不计入成功率。它们的作用是先证明“考题和考场都有效”；例如 `pvlib-1707` 就因为镜像中的 NumPy 版本导致金补丁也无法通过，被标记为 `invalid_environment`，没有拿去考 Agent。
@@ -38,10 +38,10 @@
 | 合成回归 | 旧 9 个 Python fixture 的 18 次 A/B smoke；另有 3 个跨语言 fixture | 基础执行链是否被代码改动破坏 |
 | RAG 检索 | 9 条标注查询 | 检索器能否找到目标文件 |
 | 真实 A/B 对照 | 3 个实例，各跑无 RAG 与 RAG | RAG 是否提高真实修复率 |
-| 真实留出评测 | 7 个实例，只跑当前默认 `single_no_rag` | 默认策略在更多未调参题目上的表现 |
-| 计划中的扩样 | 从 23 个候选实例抽 20 个并重复运行 | 获得更稳定的成功率与方差；尚未完成 |
+| 真实回归评测 | 7 个实例，只跑当前默认 `single_no_rag` | 默认策略在包含旧题的回归集上的表现 |
+| 大样本扩样 | 20 实例分层抽样 × 3 次重复，11 个有效实例 | 更稳定的成功率与方差（第五轮，21/33 ≈ 63.6%） |
 
-因此，“评测池 23 个”是**可选题库规模**，“本地有多少镜像”是**已准备多少考试环境**，“成功率 4/7”才是**当前最大一轮已完成真实实验**。这三个数字不能混在一起。
+因此，“评测池 23 个”是**可选题库规模**，“本地有多少镜像”是**已准备多少考试环境**，“成功率 63.6%（21/33）”才是**当前最大一轮已完成真实实验**。这三个数字不能混在一起。
 
 | 实例 | `single_no_rag` | `single_rag` | 主要观察 |
 |---|---:|---:|---|
@@ -50,7 +50,7 @@
 | `pylint-dev__astroid-1268` | 通过 | 失败 | 无 RAG 通过运行时探针确认字符串语义；RAG 运行猜错返回值 |
 | **成功率** | **2/3（66.7%）** | **1/3（33.3%）** | 样本很小，不能作为总体成功率估计 |
 
-无 RAG 三次有效运行 ID 为 `450e5b00a63d4fb5b887aae090667225`、`dfac2d0422c64c53bf23edf4446f4e34`、`f9cb29a8317f491a899bd74396d8ced5`，平均端到端耗时约 70.54 秒，平均总 Token 约 186,056。RAG 批次 ID 为 `acd3c7f883104778ae261cab7b20896f`，平均耗时约 82.94 秒，平均总 Token 约 181,881。
+无 RAG 三次有效运行 ID 为 `450e5b00a63d4fb5b887aae090667225`、`dfac2d0422c64c53bf23edf4446f4e34`、`f9cb29a8317f491a899bd74396d8ced5`，平均 Agent 执行耗时约 70.54 秒，平均总 Token 约 186,056。RAG 批次 ID 为 `acd3c7f883104778ae261cab7b20896f`，平均耗时约 82.94 秒，平均总 Token 约 181,881。
 
 当前证据支持把 `single_no_rag` 设为产品默认值。RAG 在这 3 个缺陷上没有提升端到端修复率，耗时约增加 17.6%；Token 约减少 2.2%，但不能抵消成功率下降。模型输出具有随机性，3 个实例且每种模式只运行一次，差异不具统计显著性。
 
@@ -80,17 +80,17 @@
 
 **Agent 内核改动**（`base_tool_agent.py`）：工具观测去重（同参数同结果 / `read_file` 内容未变化时只回传指针，追踪与 SSE 事件保留完整预览）、长观测摘要增强（折叠空行、标注截断长度）、Prompt Cache 命中/未命中 Token 统计（DeepSeek usage 字段进入 AgentState、事件与指标）。新增 `protocol_probe` 工具：在沙箱内执行结构化 Python 探针并逐项返回通过/失败，Single Developer 与 Coder 提示词把「先探针观察、再修改、修复后重跑探针」固化为运行时验证检查单，覆盖迭代器成套性、空迭代、迭代中业务异常与旧式 `next()` 兼容。
 
-**合成回归（9 个旧 Python 用例 × `single_no_rag` × 1）**：批次 `916c485d0c12489d9a12abeae10f78e2`，9/9 通过独立 verifier，平均 15,026 Token / 30.65 秒 / 9.22 次工具调用。与旧内核 smoke 基线（11,733 Token / 17.29 秒）相比 Token 上升约 28%：探针工具 schema 与提示词检查单增加了固定开销，在秒级小任务上占比显著。这与小仓库 RAG 的结论同向——固定开销惩罚小任务；大任务上的净收益见下文真实评测。样本各 1 次，含模型随机性，不构成稳定结论。
+**合成回归（9 个旧 Python 用例 × `single_no_rag` × 1）**：批次 `916c485d0c12489d9a12abeae10f78e2`，9/9 通过独立 verifier，平均 15,026 Token / 30.65 秒 / 9.22 次工具调用。与旧内核 smoke 基线（11,733 Token / 17.29 秒）相比 Token 上升约 28%：探针工具 schema 与提示词检查单增加了固定开销，在秒级小任务上占比显著。这与小仓库 RAG 的结论同向——固定开销惩罚小任务；单个真实任务的成本观察见下文，尚未证明大任务总体收益。样本各 1 次，含模型随机性，不构成稳定结论。
 
-**真实评测工作区完整性缺陷（重要发现与修复）**：首轮 `marshmallow-1359` 重跑（批次 `fa2010e46602441cb2485ece3aa63e0a`）Agent 全程干净（14 轮、含 1 次 `protocol_probe` 复现探针、无删除操作），但 verifier 的 `git apply` 失败。逐层诊断确认：Git for Windows 2.55.0.windows.3 的 `checkout` 在切换提交时存在竞态——index 已更新，8 个小文件未写入工作树（全新 clone 可 100% 复现；`git reset --hard` 完整恢复；镜像与 blob 完好）。该缺陷让候选补丁携带伪删除 hunk，进而使 verifier 失败。修复：`create_real_workspace` 在 checkout 后强制 `reset --hard` 对齐，并新增工作区干净度校验快速失败，避免浪费一次 LLM 运行。**重判**：将原候选补丁应用到修复后的干净工作区，官方 `tests/test_fields.py` 全部通过（77 passed）——Agent 的修复本身正确，此前失败是环境缺陷的假阴性。
+**真实评测工作区完整性缺陷（重要发现与修复）**：首轮 `marshmallow-1359` 重跑（批次 `fa2010e46602441cb2485ece3aa63e0a`）Agent 全程干净（14 轮、含 1 次 `protocol_probe` 复现探针、无删除操作），但 verifier 的 `git apply` 失败。历史排查观察到 checkout 后工作树不完整，并尝试用 reset 恢复；Git 版本缺陷、系统文件拦截、文件系统状态等候选根因尚未完成独立对照验证，不能把特定 Git 版本“竞态”写成已证实事实。修复：`create_real_workspace` 在 checkout 后强制 `reset --hard` 对齐，并新增工作区干净度校验快速失败，避免浪费一次 LLM 运行。**重判**：将原候选补丁应用到修复后的干净工作区，官方 `tests/test_fields.py` 全部通过（77 passed）——Agent 的修复本身正确，此前失败是环境缺陷的假阴性。
 
-**修复后的真实对照（`marshmallow-1359` × `single_no_rag` × 1）**：批次 `0e453ee58419424994373fc3fc0cf145`，`success=True tests=True`，总 Token **66,778**（prompt 63,226 / completion 3,552），对比上下文压缩后的历史基线 93,741 Token **下降 28.8%**；端到端 78.5 秒。`prompt_cache_hit_tokens=32,000`，输入 Token 缓存命中率 50.6%。Agent 实际调用 `protocol_probe` 验证 Issue 复现后完成单点修复（`replace_in_file` 1 次、`run_test` 1 次）。单实例单次运行，不能外推为总体成功率；Token 对比同样受模型随机性影响，但幅度显著超过历史波动。
+**修复后的真实对照（`marshmallow-1359` × `single_no_rag` × 1）**：批次 `0e453ee58419424994373fc3fc0cf145`，`success=True tests=True`，总 Token **66,778**（prompt 63,226 / completion 3,552），对比上下文压缩后的历史基线 93,741 Token **下降 28.8%**；Agent 执行耗时 78.5 秒。`prompt_cache_hit_tokens=32,000`，输入 Token 缓存命中率 50.6%。Agent 实际调用 `protocol_probe` 验证 Issue 复现后完成单点修复（`replace_in_file` 1 次、`run_test` 1 次）。单实例单次运行，不能外推为总体成功率；Token 对比同样受模型随机性影响，现有重复次数不足以估计历史波动，更不能归因于某一项优化。
 
-**评测扩容能力（10.2.1）**：真实评测池现覆盖 SWE-bench Lite dev split 全部 23 个真实实例（`REAL_INSTANCE_POOL`），支持 `--pool N` 按 repo 分层轮询抽样与 `--repeats N` 同实例重复运行，报告新增按 (instance, variant) 聚合的均值/标准差。完整 20 实例 × 多次重复的大样本实验待执行，命令见下文。
+**评测扩容能力（10.2.1）**：当前候选池收录 SWE-bench Lite dev split 中的 23 个实例（`REAL_INSTANCE_POOL`），支持 `--pool N` 按 repo 分层轮询抽样与 `--repeats N` 同实例重复运行，报告新增按 (instance, variant) 聚合的均值/标准差。完整 20 实例 × 多次重复的大样本实验待执行，命令见下文。
 
 ## 第四轮：7 实例分层真实评测（2026-10-03 下午）
 
-用本地已缓存的全部 7 个真实实例（跨 marshmallow / pydicom / astroid 三个仓库）跑了 `single_no_rag × 1` 的真实评测，批次 `64475892baa647a7878ed43a81eed865`。这是当前无污染留出集上样本量最大的一次评测，成功与失败都如实记录。
+用本地已缓存的全部 7 个真实实例（跨 marshmallow / pydicom / astroid 三个仓库）跑了 `single_no_rag × 1` 的真实评测，批次 `64475892baa647a7878ed43a81eed865`。这是当前有完整报告的最大单批回归评测。它复用了第一轮的 marshmallow-1359、pydicom-1139、astroid-1268，以及已针对失败改过提示词的 astroid-1196，不能称为无污染留出集。
 
 | 实例 | 结果 | 总 Token | 失败点（verifier） |
 |---|---|---:|---|
@@ -102,14 +102,45 @@
 | astroid-1196 | ❌ 失败 | 142,779 | `test_unpacking_in_dict_getitem_uninferable`（类型推断） |
 | astroid-1268 | ❌ 失败 | 123,347 | `test_as_string_unknown`（AST 字符串化） |
 
-**成功率 4/7 ≈ 57.1%**。这是真实 SWE-bench Lite 难度下的表现，显著高于零-shot 常见基线（多数方法在该集 <30%）。三个失败案例的根因各不相同，如实记录如下：
+**成功率 4/7 ≈ 57.1%**。这是 7 个选定 dev 实例在本项目 verifier 下的描述性结果，不能和完整官方榜单或其他方法直接比较。三个失败案例的根因各不相同，如实记录如下：
 
 - **pydicom-1139**：Agent 主动调用了 `protocol_probe`（4 个探针，覆盖 `PersonName` 的迭代/`__contains__`/空迭代/多轮迭代，全部 `ok=True`），但失败点 `test_next` 测的是旧式 `next(pn)` 协议，恰是探针未覆盖的一环。探针机制正确观察了行为，但覆盖引导仍不足以让模型在 14 轮内定位到 `next()` 兼容分支。
 - **astroid-1196 / 1268**：失败在静态类型推断（`uninferable`）与 AST 字符串化（`as_string`），属于 astroid 库的深层语义，超出「运行时协议观察」能覆盖的范围，是模型推理能力的边界而非机制缺失。
 
 **protocol_probe 的真实采纳证据**：7 个实例全部在运行中主动调用（每个 1–2 次），说明工具不是死代码，而是被模型当作真实可用的运行时观察手段；Prompt Cache 命中在成功/失败实例上均稳定在 30–50% 输入占比。
 
-**本轮发现并修复的第二个环境级缺陷（Git 大仓库 checkout 超时）**：批量评测在 `pydicom-1694`（541 文件）的 `git checkout --detach` 上超时 300 秒失败。根因是 `create_real_workspace` 旧实现 `clone`（先完整 checkout 默认分支）后再 `checkout --detach`（再完整 checkout base_commit），两次完整工作树重写，在 Windows NTFS 上大仓库极慢。修复：`clone` 加 `--no-checkout` 跳过第一次无意义的 checkout，实测 `pydicom-1694` workspace 创建从 >300 秒降到 22 秒（约 15 倍）。这与上一轮的 checkout 竞态同属 Git for Windows 2.55 环境坑，均已写入代码注释与防御校验。
+**本轮发现并修复的第二个环境级缺陷（Git 大仓库 checkout 超时）**：批量评测在 `pydicom-1694`（541 文件）的 `git checkout --detach` 上超时 300 秒失败。根因是 `create_real_workspace` 旧实现 `clone`（先完整 checkout 默认分支）后再 `checkout --detach`（再完整 checkout base_commit），两次完整工作树重写，在 Windows NTFS 上大仓库极慢。修复：`clone` 加 `--no-checkout` 跳过第一次无意义的 checkout，实测 `pydicom-1694` workspace 创建从 >300 秒降到 22 秒（约 15 倍）。这些是本机观察和防御性修复，不能据此断言 Git 上游缺陷或 WorkBuddy 沙箱拦截是唯一根因。
+
+## 第五轮：20 实例分层抽样 × 3 次重复（2026-10-03 晚）
+
+用 `--pool 20 --repeats 3` 从 dev split 分层抽样 20 个实例，每个有效实例用 `single_no_rag` 重复运行 3 次，批次 `c1f4af0e7bf141b0bb4bb77da165d610`。这是当前最大规模的真实评测。抽中的 20 个实例里，9 个被环境校准门禁判为无效并跳过（不进入成功率分母）：5 个 pvlib 镜像用 NumPy 2.x、历史代码访问已删除的 `np.Inf`；1 个 pyvista 与 3 个 sqlfluff 镜像的 `conda activate` 因 conda 版本与 base Python 不匹配而崩溃。这 9 个实例没有调用模型。
+
+**有效实例 11 个 × 3 次重复 = 33 次 Agent 运行，成功率 21/33 ≈ 63.6%**。
+
+| 实例 | 结果 | 成功率 | 平均 Token | 平均耗时 |
+|---|---|---:|---:|---:|
+| marshmallow-1343 | ✅ | 3/3 | 115,247 | 97 秒 |
+| marshmallow-1359 | ✅ | 3/3 | 63,229 | 59 秒 |
+| pydicom-1256 | ✅ | 3/3 | 120,050 | 78 秒 |
+| pydicom-1413 | ✅ | 3/3 | 193,518 | 159 秒 |
+| pydicom-1694 | ✅ | 3/3 | 97,498 | 81 秒 |
+| astroid-1196 | ✅ | 3/3 | 143,291 | 101 秒 |
+| astroid-1866 | ✅ | 3/3 | 112,756 | 100 秒 |
+| pydicom-1139 | ❌ | 0/3 | 138,754 | 98 秒 |
+| astroid-1333 | ❌ | 0/3 | 267,031 | 407 秒 |
+| astroid-1978 | ❌ | 0/3 | 115,087 | 120 秒 |
+| sqlfluff-1763 | ❌ | 0/3 | 173,307 | 134 秒 |
+
+四个失败实例的 verifier 失败点各不相同，均不是环境缺陷（0 个 `error` 字段），如实记录：
+
+- **pydicom-1139**：`test_valuerep.py::TestPersonName::test_next`。与第四轮同一失败点，旧式 `next(pn)` 协议兼容分支，探针覆盖引导仍不足以在 14 轮内定位。
+- **astroid-1333**：`unittest_modutils.py::test_load_packages_without_init`。模块包加载语义，静态类型推断边界之外的另一类 astroid 深层语义。
+- **astroid-1978**：`unittest_raw_building.py::test_build_module_getattr_catch_output`。模块构建的 `getattr` 捕获行为。
+- **sqlfluff-1763**：`linter_test.py::test_safe_create_replace_file`。文件安全替换（`safe_create_replace_file`），属仓库特有 API 语义。
+
+值得注意的是 4 个失败实例都表现出**高一致性**：同一实例的 3 次重复结果完全一致（0/3 或 3/3），说明失败不是模型随机性波动，而是稳定的能力边界——Agent 会产出补丁（patch 从 382 字节到 3 KB，14 轮迭代 + 15~37 次工具调用），但补丁无法通过 verifier 的目标测试。
+
+**本批暴露的评测器环境缺陷（均已修复）**：本轮三次启动才跑通，逐层定位出三个真实 bug 而非环境误报——(1) `_sandbox_profile` 的 `conda activate testbed` 在 sqlfluff/pyvista 镜像崩溃，改为 `export PATH=/opt/miniconda3/envs/testbed/bin:$PATH` 直接指向 testbed 环境；(2) pvlib 等无效环境此前会让整批评测终止，改为跳过无效实例继续跑其余；(3) `_failed_pytest_nodes` 未归一化 pytest 参数化后缀，导致 `fail_to_pass` 的 `[...]` 节点名永远匹配不上，新增 `_normalize_pytest_node` 在比较两侧统一去后缀。
 
 ## 合成回归与检索评测
 
@@ -128,16 +159,21 @@
 
 当前项目已经具备 AI 应用／Agent 实习和校招作品的核心证据：模型能调用真实工具修改代码，机器测试拥有最终裁决权；任务执行与浏览器连接解耦；事件、工具耗时和 Token 可追踪；实验能保存配置、补丁、轨迹与独立验证结果；并且真实仓库评测暴露了失败案例，而非只展示成功 Demo。
 
-它还不能宣称为生产级自主软件工程系统。当前主要限制是：
+它还不能宣称为生产级自主软件工程系统，也没有证据证明“各方面都优秀”：
 
-- 真实评测在无污染留出集上已有 7 实例（跨 3 仓库）样本、成功率 4/7 ≈ 57.1%，但离 20 实例 × 多次重复的统计稳定结论仍有距离；扩大样本需要拉取 pvlib/pyvista/sqlfluff 的镜像并消耗更多额度，属于下一步的量化工作而非机制缺失。
-- 小任务上探针 schema 与检查单的固定开销抬升成本（合成 9 case 平均 +28%），但真实缺陷任务上内核去重 + Prompt Cache 命中把 `marshmallow-1359` 从 93,741 降到 66,778（-28.8%），净收益在大任务上成立；是否按任务规模动态开关探针是可选优化，当前默认开启以换取协议类 bug 的修复率。
-- pydicom / astroid 的三个失败案例暴露了模型在旧式迭代协议、深层类型推断上的能力边界；`protocol_probe` 已提供机制性缓解（7 实例全部采纳），但覆盖引导与模型推理上限仍是真实失败来源，如实记录而非隐藏。
-- SQLite 后台线程适合单机演示；生产路径已提供任务队列 + 独立 Worker（租约、心跳、幂等，SQLite/Redis 双后端），多副本部署的实测属于部署环境的运维工作，不在评测范畴。
-- 恢复操作现在优先从 SQLite 检查点恢复上下文，单 Agent 与多 Agent（planner/coder/tester/reviewer 四角色独立恢复）均已覆盖。
-- 真实评测依赖 Git 工作区完整性，Git for Windows 2.55 的 checkout 竞态（已用 `reset --hard` + 干净度校验防御）与大仓库 checkout 超时（已用 `--no-checkout` 优化）均已定位并修复，其它平台版本仍建议保留该校验。
+- 7 题回归复用了开发题，4/7 不是独立泛化估计；必须冻结策略并使用新的未调参任务验证。
+- 单个任务 Token 下降 28.8% 不能证明大仓库净收益，也不能把缓存命中统计当作已测得的货币成本节省。
+- 协议探针已实现，但三个失败说明现有策略仍有不足；未完成消融，不能断言失败只能归咎于模型上限。
+- 单机 SQLite 队列可演示 API/Worker 分离。Redis 原子性、执行 fencing、背压、鉴权、多机状态存储和真实崩溃演练仍有缺口，详见 [项目复核](project-review.md)。
+- 检查点恢复的是角色消息；多角色阶段、返工计数和工具副作用没有事务检查点，不是无损续跑。
 
-下一轮最有价值的工作是在扩到 20 实例后重新对照单 Agent / 多 Agent 与按仓库规模自适应 RAG 的策略，并针对 pydicom-1139 暴露的旧式迭代协议补充探针覆盖引导。
+### 核查口径补充（2026-10-03）
+
+1. `elapsed_seconds` 计量真实评测中的 Agent 执行阶段，不含仓库克隆、前置校准和最终独立 verifier；不可称为用户端到端等待时间。
+2. 这里使用官方实例镜像及数据，但执行的是自研 pytest 文件级 verifier，**不是官方 harness 的完整 resolved 指标**。校准允许金补丁存在不涉及 FAIL_TO_PASS 的已知失败，候选判分会排除这些节点。必须同时检查 `unstable_pass_to_pass`、`excluded_unstable_tests`、`ignored_environment_failures` 和原始 stdout，不能统称“官方测试全部通过”。
+3. 本次检查发现 `c2d99a7198b241aca03183a55e4584c0`、`ae921255c40a49929e80891b168f2b17`、`236ad768ac3342a289a81c8e230f0de5` 只有工作目录，没有 `report.json`。不能据此声称 20 题 × 3 已完成，也不能从空日志判断正在正常推进。现有评测器在全部校准结束前不写报告，这是需要补强的诊断缺口。该缺口在第五轮已通过「校准阶段即写 `partial_invalid_environment` 报告 + 逐行追加 report」改善，`c1f4af0e7bf141b0bb4bb77da165d610` 有完整 `report.json`。
+4. 最大完整单批仍为 `64475892baa647a7878ed43a81eed865`：7 条记录、4 条 success。可分享的逐题指标见 [回归数据](experiments/real_regression_2026-10-03.csv)，全部原始追踪仍在本机运行目录。
+5. WorkBuddy 的补丁字节传输、clone 超时和换行配置改动保留。本次不会把“有代码”“离线测试通过”“真实模型评测完成”混作一个验收级别。
 
 ## 复现命令
 

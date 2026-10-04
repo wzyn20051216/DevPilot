@@ -1,113 +1,61 @@
-# DevPilot 部署与任务队列运维
+# DevPilot 部署与任务队列
 
-本文档对应技术手册 10.2.5（API 与 Sandbox Worker 分离）与 10.2.6
-（独立 Docker Host / Kubernetes Job / Firecracker 强化隔离），说明
-三种执行模式、租约/心跳/幂等语义、独立 Docker Host 配置及演进路径。
+本页描述当前实现。适用范围是可信本地环境与单机演示，尚未完成多机生产验收。API 当前无用户鉴权和仓库级授权，不应直接对公网开放。
 
-## 1. 三种模式对比
+## 执行模式
 
-`TASK_QUEUE_BACKEND` 决定任务如何从「入队」走到「执行」：
+| 配置 | 执行位置 | 当前边界 |
+|---|---|---|
+| `inline`（默认） | API 内后台线程 | 单 API 进程；重启标记中断，SSE 断开不停止任务 |
+| `sqlite` | 独立 Worker | API、Worker 必须访问同一 SQLite 文件和仓库路径；已覆盖基本并发领取和失败重试测试 |
+| `redis` | 独立 Worker | 实验实现；弹出和更新非原子，未验收崩溃一致性，不适合依赖其自动故障切换 |
 
-| 模式 | 职责划分 | 适用场景 | 故障语义 |
-|------|----------|----------|----------|
-| `inline` | API 进程内起后台线程直接执行，无队列 | 本地开发、单机演示 | Worker 即 API，进程退出即中断；靠 `mark_incomplete_as_interrupted` 标记孤儿任务 |
-| `sqlite` | API 只入队 `task_queue` 表，独立 Worker 进程领取执行 | 单机/小规模生产、答辩 Demo，零额外依赖 | Worker 崩溃 → 租约到期自动重投；SQLite 单写者，跨机共享需注意锁 |
-| `redis` | 同上，队列落在 Redis | 多机、多 Worker 高吞吐 | 同上，且支持多客户端并发领取、分布式部署 |
+切换 Redis 只改变队列，任务、事件、检查点仍保存在 SQLite；并不会自动得到多机一致的状态存储。Redis Python 客户端不是默认依赖，试验前需另行安装与配置。
 
-关键差异：`inline` 里「执行」是 API 的副作用；`sqlite`/`redis` 里「执行」
-被移到 Worker，API 变薄、可独立扩容，且任务状态与队列状态分离可观测。
+## 本地启动
 
-## 2. 租约 + 心跳 + 幂等语义
+在 `backend/.env` 设置 `TASK_QUEUE_BACKEND=sqlite`，API 和 Worker 要读取相同配置。然后执行：
 
-### 2.1 租约（lease）
-
-Worker `claim` 时写入 `lease_expires_at = now + task_worker_lease_seconds`
-（默认 300s）。任务只有在 `status='queued'`，或 `status='claimed'` 但
-**租约已过期**时，才会被再次领取。Worker 崩溃后，超过一个租约周期，任务
-自动回到队列，由其它 Worker 接手。
-
-### 2.2 心跳（heartbeat）
-
-存活 Worker 每 `task_worker_heartbeat_seconds`（默认 30s）对在飞任务续租，
-把 `lease_expires_at` 前移。心跳间隔必须**显著小于**租约时长，否则长任务
-会被误判为崩溃而重复执行。
-
-### 2.3 幂等（idempotency）
-
-- **重复入队防护**：`task_queue.task_id` 有 `UNIQUE` 约束，同一任务重复
-  `enqueue` 只会得到 `False`，不会产生重复队列项。
-- **重复执行防护**：Worker 领取到队列项后，还要调用
-  `claim_status(task_id, {"awaiting_approval","interrupted"}, "running")`
-  在 `tasks` 表上做原子状态迁移。这一步串行化「队列领取」与「业务状态」，
-  防止同一任务被 API 与 Worker、或多个 Worker 重复执行。
-- **失败重试上限**：`attempts` 每次 `claim` 自增；失败且未达 `max_attempts`
-  时回 `queued` 重试，达到上限则进 `dead`（死信）终止。
-
-### 2.4 故障恢复矩阵
-
-| 故障场景 | 结果 |
-|----------|------|
-| Worker 进程崩溃（任务执行中） | 租约到期 → `reclaim_expired` 置回 `queued` → 其它 Worker 领取重跑 |
-| Worker 心跳线程卡死 | 同上，租约不再续期，到期后重投 |
-| 重复入队同一任务 | `task_id` 唯一约束 → 返回 False，不产生重复 |
-| 同一任务被并发领取 | `claim` 单语句原子领取，只有一个 Worker 拿到 |
-| 任务状态不允许执行（已被执行/取消） | `claim_status` 返回 False → `complete(False)` 归还队列，靠 attempts 上限兜底 |
-| 反复失败 | `attempts` 递增，达 `max_attempts` 后进 `dead` 死信 |
-
-## 3. 独立 Docker Host 配置
-
-Worker 负责运行 Sandbox，需要访问 Docker。生产环境不把宿主机的
-`/var/run/docker.sock` 挂进 Worker，而是指向一台独立 Docker Host：
-
-```bash
-# 方式一：环境变量（Worker 进程读取 DOCKER_HOST）
-export DOCKER_HOST=tcp://docker-host.local:2375
-# 启用 TLS（推荐）
-export DOCKER_TLS_VERIFY=1
-export DOCKER_CERT_PATH=/etc/docker/certs
+```powershell
+docker compose --profile worker up --build
 ```
 
-```bash
-# 方式二：docker context（本地/运维机切换）
-docker context create prod \
-  --docker "host=tcp://docker-host.local:2375,ca=...,cert=...,key=..."
-docker context use prod
+仅启用 worker profile 不会自动把 API 从 inline 改为 sqlite。也可以在两个终端分别执行：
+
+```powershell
+.venv\Scripts\python.exe -m uvicorn backend.src.main:app
+.venv\Scripts\python.exe -m backend.src.worker
 ```
 
-Worker 的 `DOCKER_HOST` 最终通过环境变量注入（见 K8s `worker-deployment.yaml`
-与 `configmap.yaml` 的占位）。独立 Docker Host 隔离了 API 与执行环境，是
-10.2.6 的第一阶段。
+确保预先构建沙箱镜像、Docker 可访问仓库目录，且两个进程访问同一任务库。`--once` 处理至多一项任务；运行期间同样续租和检查取消。
 
-## 4. K8s Job 方案与 Firecracker 演进
+## 状态、重试和恢复
 
-- **K8s Job（每任务一 Job）**：把「常驻 Worker 轮询」替换为「一任务一
-  Job」。Job 自带 `backoffLimit`/`parallelism`，每个任务独立 Pod 与资源
-  配额，故障爆炸半径更小；代价是冷启动延迟与额外的 Job 编排。适合任务间
-  有强隔离要求的场景。
-- **Firecracker 强化隔离**：进一步把执行单元换成 microVM（约 125ms 启动、
-  内核级隔离），缩小可信计算基，抵御容器逃逸。可经支持 Firecracker 的
-  Docker 运行时或 containerd snapshotter 接入，是 10.2.6 的最终形态。
+1. `/plan` 保存 `awaiting_approval`；`/execute` 只接受该状态。队列模式下它写入队列，由 Worker 原子领取并将任务改为 `running`。
+2. 正常结束后队列进入 `done`。执行失败且次数未达上限时重新排队，Worker 允许失败任务在下一次 attempt 重新执行；已取消任务不会执行。
+3. API 重启不会把独立 Worker 的 `running` 任务错误标成 `interrupted`。
+4. SQLite 租约过期后，队列项隔离为 `dead`，运行任务变成 `interrupted`。**不会自动重投**：旧 Worker 可能只是暂时无法续租，仍在修改文件。
+5. 确认旧 Worker 与其工具操作已经停止，检查仓库 Diff 后，调用 `/resume`。它仅接受 `interrupted`；加载角色消息后重新进入编排流程。工具可能重放，不能承诺恰好一次执行。
+6. Worker 同时处理 SIGINT/SIGTERM；等待在途任务结束期间继续续租。耗尽退出等待时间仍不是外部工具已停止的证明。
 
-详见 `deploy/kubernetes/README.md`。
+租约默认 300 秒、心跳默认 30 秒。心跳必须显著短于租约。队列按 task_id 去重不等于工具副作用幂等；同一仓库的不同任务目前也没有互斥保护。
 
-## 5. 本地试运行与验证
+## 独立 Docker Host
 
-```bash
-# 启动 API + frontend + Worker（Worker 由 profile 按需启用）
-docker compose --profile worker up
+代码可通过 `DOCKER_HOST` 连接 Docker daemon。远端 daemon 的 bind mount 路径必须存在于**远端主机**；Worker 本地有文件不代表远端可见。镜像也要在目标 daemon 上准备好。示意环境配置：
 
-# 只起 Worker 加后端
-docker compose --profile worker up backend worker
+```powershell
+$env:DOCKER_HOST = "tcp://docker-host.local:2376"
+$env:DOCKER_TLS_VERIFY = "1"
+$env:DOCKER_CERT_PATH = "C:\docker-certs"
 ```
 
-验证步骤：
+地址、端口和证书路径必须与实际 daemon 配置匹配。这只是连接入口，项目未实现仓库自动同步、远端调度与整套生产安全配置。
 
-1. 创建计划：`POST /api/tasks/plan`，得到 `awaiting_approval` 任务；
-2. 触发执行：`POST /api/tasks/{task_id}/execute`（`TASK_QUEUE_BACKEND=sqlite`
-   时 API 只入队，Worker 领取执行）；
-3. 观察 Worker 日志出现 `claim` → `service.start` → `complete`；
-4. 查询 `GET /api/tasks/{task_id}` 确认任务最终 `completed`/`failed`；
-5. 查询队列统计：连入 SQLite 后 `SELECT status, COUNT(*) FROM task_queue GROUP BY status;`
-   应看到 `done` 或 `dead`；
-6. 模拟崩溃：强杀 Worker 容器，等待超过一个租约周期后重启，任务应被重新
-   领取执行（验证租约重投）。
+## Kubernetes 与未来隔离
+
+`deploy/kubernetes/` 是部署形态示例。需要自行准备镜像、Secret、PVC、网络与证书，并完成实测。当前没有每任务创建 Kubernetes Job 的调度器，也没有 Firecracker 执行器；二者都是待实现方向，不能仅通过改 DOCKER_HOST 接入任意 microVM 服务。
+
+## 验证与已知限制
+
+最小验收应覆盖：计划批准后执行、重复请求、取消、SSE 重连、API 重启不干扰 Worker、任务实际重试、租约丢失隔离、确认旧进程停止后的显式恢复。真实故障演练仍未完成；离线测试不能替代多进程崩溃和远程 Docker 验收。执行 fencing、背压、鉴权、统一状态存储和仓库互斥仍须补齐，详见 [项目复核](project-review.md)。

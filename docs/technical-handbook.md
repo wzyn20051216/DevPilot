@@ -6,6 +6,8 @@
 
 ![DevPilot AI 软件工程 Agent 平台](assets/devpilot-cover.png)
 
+> 封面是能力概览，不是执行时序图。默认使用 Single Developer；Repository MCP 只读，写代码走本地受控工具，GitHub 发布走单独审批流程。
+
 *图 1：DevPilot 将仓库理解、计划、代码修改、隔离测试、审查与可追踪事件组织为一条受控工程链路。*
 
 ---
@@ -16,7 +18,9 @@
 
 DevPilot 是一个面向真实代码仓库的 AI 软件工程平台。用户可以输入本地开发任务，也可以导入 GitHub Issue；系统先分析仓库并生成计划，等待人工审批后，再由 Agent 调用代码检索、文件修改、测试和 Git Diff 等工具完成任务。
 
-![DevPilot 开发工作台真实界面](../output/playwright/level18-completed.png)
+![DevPilot 开发工作台界面示例](../output/playwright/level18-completed.png)
+
+> 该图为自动化 UI fixture 演示（任务 ID 含 mock-task），用于说明界面布局，不是 DeepSeek 真实修复成功的证据。
 
 *图 2：真实运行界面同时呈现计划、Agent Trace、测试结果、Diff、Review 与 Publish 入口。*
 
@@ -266,6 +270,8 @@ DevPilot 的目标用户是希望观察和控制执行过程的开发者，典�
 
 ![DevPilot 任务全生命周期流程](assets/task-lifecycle.png)
 
+> 此图展示多角色示例路径；默认单 Agent 不会依次运行独立 Tester/Reviewer，队列模式由 Worker 执行。
+
 *图 4：流程图依据当前代码校对，覆盖计划审批、最多两轮测试返工、独立 Reviewer、SQLite 事件持久化、协作式取消、二次发布确认与 Snapshot Hash 门禁。*
 
 ```mermaid
@@ -326,10 +332,10 @@ Planner、Tester 和 Reviewer 的最终输出都要经过 Pydantic Schema 解析
 
 - **取消**：状态先变为 `cancelling`，后台设置 `threading.Event`；Agent 在每轮模型调用和工具调用边界检查，随后写入 `cancelled`。
 - **断线续传**：前端记录最后事件序号，重连 `/events?after_sequence=N`。
-- **进程重启**：启动时把遗留的 `running/cancelling` 任务标记为 `interrupted`。
+- **进程重启**：inline 模式启动时标记遗留任务为 `interrupted`；队列模式 API 重启不修改独立 Worker 的任务状态。
 - **恢复**：用户显式调用 `/resume`，系统从已经批准的计划重新执行。
 
-当前恢复不是模型上下文级 checkpoint；它会重新开始 Agent 流程。这是实现边界，不应描述成“从上一轮推理继续”。
+现已支持模型消息检查点；流程仍从执行入口重新进入，不是多角色阶段的事务恢复。详见 10.2。
 
 ---
 
@@ -341,12 +347,15 @@ Planner、Tester 和 Reviewer 的最终输出都要经过 Pydantic Schema 解析
 flowchart LR
     User[开发者] --> Web[Vue 3 工作台]
     Web --> API[FastAPI API]
-    API --> TaskService[TaskExecutionService]
+    API --> Dispatch[inline 或 SQLite 队列 Worker]
+    Dispatch --> TaskService[TaskExecutionService]
     TaskService --> Runtime[Agent Runtime]
-    Runtime --> Planner
-    Runtime --> Coder
-    Runtime --> Tester
-    Runtime --> Reviewer
+    Runtime --> Single[Single Developer 默认]
+    Runtime --> Multi[多角色模式]
+    Multi --> Planner
+    Multi --> Coder
+    Multi --> Tester
+    Multi --> Reviewer
     Runtime --> ToolRegistry[Tool Registry]
     ToolRegistry --> RepoMCP[Repository MCP]
     ToolRegistry --> LocalTools[写入工具]
@@ -370,6 +379,8 @@ flowchart LR
 | Sandbox | `backend/src/sandbox` | Docker 隔离执行 |
 | Data | `backend/src/database` | SQLite 连接、表结构与 Repository |
 | Evals | `backend/src/evals` | 合成任务、真实缺陷、统计和报告 |
+
+消息检查点保存在 `agent_contexts`，队列项保存在 `task_queue`；它们和任务状态是不同记录，必须同时检查。
 
 ### 5.3 任务状态机
 
@@ -446,7 +457,7 @@ Coder 修改大文件时优先使用唯一原文锚点的 `replace_in_file`，�
 
 ### 6.4 Docker Sandbox
 
-允许的程序只有 `python`、`pytest`、`ruff` 和 `mypy`。执行参数使用数组并设置 `shell=False`，不会把模型输出交给 Shell 解释。
+允许的程序包括 `python`、`pytest`、`ruff`、`mypy`，以及跨语言扩展的 `node`、`npx`、`javac`、`java`；具体以 `sandbox/docker_runner.py` 的白名单为准。执行参数使用数组并设置 `shell=False`，不会把模型输出交给 Shell 解释。
 
 容器限制：
 
@@ -564,6 +575,8 @@ Planner、Tester 和 Reviewer 分别映射到 `PlannerOutput`、`TesterOutput` �
 | `devpilot-backend`、`devpilot-frontend`、`github-mcp-server` | 运行产品本身或 GitHub MCP，并非评测样本 |
 
 ![SWE-bench Lite 真实缺陷对照实验](assets/real-world-evaluation.png)
+
+> 图中“相同仓库与 base commit”仅指同一道题的不同实验组配对，不同实例各用自己的提交。图内耗时不能理解为全流程等待；判分使用自研 verifier，已知环境失败可能被排除。
 
 *图 5：同一组 3 个校准实例的描述性对照。每个实例、每种策略只运行一次，结果用于决定当前默认策略，不代表总体成功率。*
 
@@ -751,36 +764,37 @@ DevPilot/
 
 ---
 
-## 十、🛡️ 当前边界与下一步
+## 十、🛡️ 已实现能力、证据边界与改进顺序
 
-> 2026-10-03 更新：10.1 列出的边界与 10.2 的七项改进已在一轮集中改进中逐项处理。以下保留原始问题陈述，并在每条后标注当前状态与对应实现位置。
+> 2026-10-03 复核：功能代码、离线测试、真实实验和生产验收是四个不同层级。此前“全部已解决”的表述已撤回。详见 [项目复核](project-review.md)。
 
-### 10.1 当前边界
+### 10.1 当前能力与验收状态
 
-- 真实无污染留出集只有 4 个实例，结论方差很大。
-  → **已缓解**：真实评测池覆盖 SWE-bench Lite dev split 全部 23 个真实实例，新增 `--pool N` 分层抽样（按 repo 轮询）与 `--repeats N` 同实例重复运行（`backend/src/evals/real_world.py`）。已用本地缓存的 7 个实例（跨 marshmallow/pydicom/astroid 三仓库）跑出成功率 4/7 ≈ 57.1% 的真实样本，成功与失败案例均如实记录在 `docs/current-evaluation.md`；扩到 20 实例需拉取其余仓库镜像并消耗额度，属于量化工作而非机制缺失。
-- 留出任务平均约 9.9 万 Token，成本仍然较高。
-  → **已缓解**：Agent 内核新增工具观测去重（同参数同结果 / 文件未变化只回传指针）、长观测摘要增强与 Prompt Cache 命中/未命中统计（`base_tool_agent.py`、`agent_state.py`）。实测对照见 `docs/current-evaluation.md`。
-- pydicom 失败暴露了历史协议和隐式兼容行为的推断弱点。
-  → **已缓解**：新增运行时协议探针工具 `protocol_probe`（沙箱内执行结构化 Python 探针，返回逐项通过/失败），并把「先探针观察、再修改、修复后重跑探针」固化进 Coder 与 Single Developer 提示词检查单，覆盖迭代器成套性、空迭代、迭代中业务异常、旧式 `next()` 兼容等边界。
-- SQLite + 进程内线程只适合单机演示和个人部署。
-  → **已缓解**：新增持久化任务队列与独立 Sandbox Worker：原子领取（单条 UPDATE + RETURNING）、租约、心跳续租、attempts 重试与死信、task_id 幂等，支持 SQLite 与 Redis 两种后端（`services/task_queue.py`、`worker.py`）。`TASK_QUEUE_BACKEND=inline`（默认）时行为与历史版本完全一致。
-- 恢复操作会重新运行 Agent，不会恢复中断前完整上下文。
-  → **已解决**：Agent 每轮把消息上下文检查点写入 SQLite（`agent_contexts` 表，按 `(task_id, agent_name)` 复合键），服务重启后 resume 优先从检查点恢复模型上下文继续执行，并产生可观测的恢复事件；无检查点时回退为按已批准计划重跑（`services/context_store.py`、`task_execution_service.py`）。单 Agent 与多 Agent（planner/coder/tester/reviewer 四角色各自独立恢复）均已覆盖。
-- 当前真实集主要是 Python，尚未证明跨语言能力。
-  → **部分缓解**：合成 benchmark 新增 TypeScript（跨文件）、Java（跨文件）、Python 跨模块大型 Issue 三个 case，polyglot 沙箱镜像支持 node/tsx 与 JDK 22（JEP 458 多文件源码启动）；真实 SWE-bench 集仍以 Python 为主，扩展 SWE-bench Multi 属于后续工作。
-- Docker Socket 直挂只适合本地环境。
-  → **已缓解**：Worker 分离后可经 `DOCKER_HOST` 连接独立 Docker daemon，API 不再持有 docker.sock；`deploy/kubernetes/` 提供 API + Worker 分离部署示例清单，K8s Job（一任务一 Job）与 Firecracker microVM 的演进路径见 `docs/deployment.md`。
+| 能力 | 已实现内容 | 证据与尚未解决的问题 |
+|---|---|---|
+| 扩样评测 | 23 题候选池、分层选择、重复参数和描述统计 | 最大完整单批为 7 题 4 次成功，复用了开发题；20 × 3 没有完整报告 |
+| 协议探针 | Python 沙箱探针、提示词检查单 | 工具可运行；尚无独立消融证明提高成功率 |
+| 动态 RAG | 源文件数量和查询定位信号的启发式规则 | API 与 Worker 现共享策略；阈值并非通过大仓库对照实验优化所得 |
+| Token 优化 | 观测去重、历史摘要、缓存 usage 统计 | 单题成本下降，合成小任务成本反而上升；无总体净收益结论 |
+| API/Worker 分离 | SQLite 队列、领取、心跳、失败重试、死信 | 租约丢失采用隔离后人工恢复；Redis 为非原子实验实现；无多机生产验收 |
+| 隔离部署 | Docker 沙箱与独立 daemon 配置入口 | K8s 清单是示例；每任务 Job 和 Firecracker 适配器均未实现 |
+| 跨语言任务 | TS、Java、Python 跨模块各一个合成 fixture | fixture 可验收不等于 Agent 已修好真实跨语言 Issue |
+| 消息恢复 | 角色消息保存、加载、恢复事件 | 不是编排阶段检查点，也不保证工具只执行一次 |
 
-### 10.2 优先级最高的改进
+### 10.2 如何正确理解恢复
 
-1. 把真实评测扩展到至少 20 个分层实例，并对同一实例重复运行。—— **已实现**（`--pool` / `--repeats` / 23 实例真实池），已跑 7 实例分层样本（成功率 4/7），完整 20 实例待拉取剩余镜像后执行。
-2. 增加运行时协议探针，引导模型验证迭代器、异常边界和兼容行为。—— **已实现**（`protocol_probe` 工具 + 提示词检查单）。
-3. 按仓库规模和查询歧义动态启用 RAG，而不是全局开关。—— **已实现**（`rag/policy.py` 四分支决策，`RAG_MODE=auto` 接入任务执行工厂）。
-4. 引入 Prompt Cache、工具结果摘要和文件内容去重，进一步降低 Token。—— **已实现**（观测去重 + 摘要 + cache hit/miss 统计进事件与指标）。
-5. 将 API 和 Sandbox Worker 分离，使用 Redis/消息队列、租约、心跳和幂等任务。—— **已实现**（SQLite/Redis 双后端队列 + 独立 Worker 进程）。
-6. 使用独立 Docker Host、Kubernetes Job 或 Firecracker 强化生产隔离。—— **已实现**（独立 Docker Host 支持 + K8s 清单；Firecracker 为演进方向）。
-7. 增加 TypeScript/Java 项目和跨文件大型 Issue。—— **已实现**（3 个新 fixture 已真实构建镜像验证初始失败与修复通过）。
+`agent_contexts` 以任务 ID 和角色名保存最近一次完整工具回合后的消息。恢复时校验工具调用与结果配对，保留 system 和原始请求；超出消息上限时按完整回合裁剪。损坏的旧检查点回退为新上下文，并记录日志。注入快照只消费一次，之后的修复轮使用新的失败反馈。
+
+多角色模式仍从 `execute_stream` 入口运行；已完成阶段、返工轮数、文件修改和外部工具副作用没有统一事务。因此断电可能发生在“文件已改，快照尚未写入”的窗口。恢复前要检查工作区，不能把消息恢复描述为无损接续整个工作流。
+
+SQLite 队列中租约过期会把队列项隔离为 `dead`，并把运行中的任务置为 `interrupted`。确认旧 Worker 已停止后才可显式 `/resume`。租约超时本身不能证明旧进程停止，当前没有跨进程 fencing，因此不自动把写代码任务交给另一 Worker。
+
+### 10.3 下一轮优先验收
+
+1. 冻结模型、提示词和测试判分，使用未调参的新任务，按题配对重复比较默认策略、动态 RAG 和多角色模式；报告失败与环境无效项。
+2. 把校准过程逐条持久化；目前校准异常可能只留下目录，没有最终报告。正式对外比较前接入官方 harness，并记录镜像 digest、模型版本与完整成本口径。
+3. 为 Worker 增加真正的执行 fencing、并发上限、仓库级互斥和故障注入；验收后才讨论自动故障切换。
+4. 面向服务部署补鉴权、仓库授权、配额、审计和统一状态存储；远程 Docker 必须解决远端工作区路径一致性。
 
 ---
 
@@ -804,7 +818,7 @@ Prompt 只是第一层。真正边界由角色工具白名单、执行层二次�
 
 ### 11.5 如何证明任务真的成功？
 
-端到端成功要求执行协议没有 error，并且独立 verifier 通过。真实评测还会先校准错误基线与金补丁，并保护测试文件，避免模型篡改验收标准。
+评测中的 `success` 要求执行协议没有 error，并且独立 verifier 通过。产品任务的 `completed` 只表示执行流程正常结束，不保证独立验收通过。真实评测还会先校准错误基线与金补丁，并保护测试文件，避免模型篡改验收标准。
 
 ### 11.6 SSE 断线为什么不影响任务？
 
@@ -816,7 +830,7 @@ Agent 在后台线程中执行，事件写入 SQLite；SSE 只是数据库事件
 
 ### 11.8 如果做成生产系统，最先改什么？
 
-先把后台线程替换为外部任务队列和独立 Worker，再隔离 Docker daemon，补充租约、心跳、幂等、配额和多租户权限。模型策略优化应建立在可靠执行基础设施之后。
+已有队列和独立 Worker 原型，下一步应先补执行 fencing、鉴权、配额、仓库互斥与故障演练，再验收远程 Docker 和多机状态存储。模型策略优化应建立在可靠执行基础设施之后。
 
 ---
 

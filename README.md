@@ -14,7 +14,7 @@ DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。�
 - Hybrid Code RAG、AST 分块、BM25 与向量检索；支持按仓库规模与查询歧义动态启用（`RAG_MODE=auto`）
 - 运行时协议探针工具（`protocol_probe`）：引导模型在沙箱内验证迭代器、异常边界与兼容行为
 - 工具观测去重与摘要、Prompt Cache 命中统计，持续压低长任务 Token 成本
-- 上下文断点恢复：服务重启后 resume 优先恢复中断前的模型上下文，而不是重跑 Agent
+- 上下文断点恢复：服务重启后 resume 优先恢复中断前的模型上下文；恢复消息后编排流程仍会重新进入，工具可能重放
 - MCP Repository / GitHub 工具发现与调用
 - Docker 隔离测试、角色工具权限和路径边界校验
 - 持久化任务队列与独立 Sandbox Worker（`TASK_QUEUE_BACKEND=sqlite|redis`，租约 / 心跳 / 幂等），支持 API 与执行分离部署
@@ -28,7 +28,10 @@ DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。�
 flowchart LR
     User --> UI[Vue Frontend]
     UI --> API[FastAPI]
-    API --> Orchestrator
+    API --> Dispatch[inline 或队列 Worker]
+    Dispatch --> Single[Single Developer 默认]
+    Dispatch --> Orchestrator[多角色可选]
+    Single --> Tools
     Orchestrator --> Planner
     Orchestrator --> Coder
     Orchestrator --> Tester
@@ -49,6 +52,8 @@ flowchart LR
 
 ## Agent Workflow
 
+下图是可选多角色模式。默认 `single_no_rag` 在计划批准后由一个 Single Developer 完成阅读、修改和测试，不经过独立 Tester/Reviewer。
+
 ```mermaid
 flowchart LR
     Input[Local Task / GitHub Issue] --> Plan[Planner]
@@ -66,6 +71,8 @@ flowchart LR
 ```
 
 ## Safety
+
+当前 API 未提供用户鉴权与多租户隔离，仅适用于可信本地环境。`completed` 表示执行流程正常结束，不等于独立测试通过；只有评测器的 verifier 有独立判分。生产限制及本次核查见 [项目复核](docs/project-review.md)。
 
 - 文件工具使用仓库根目录校验，拒绝 `../` 路径逃逸。
 - Agent 按角色获得工具白名单，Tester 和 Reviewer 默认无写权限。
@@ -89,7 +96,7 @@ uv run python -m backend.src.evals.audit
 # 不调用 LLM：评测文件级 RAG 的 Recall@5、MRR 与延迟
 uv run python -m backend.src.evals.retrieval --top-k 5
 
-# 调用已配置的 LLM：四组架构各重复 3 次，共 108 次 Agent 任务
+# 调用已配置的 LLM：四组架构各重复 3 次，当前 12 × 4 × 3，共 144 次 Agent 任务
 uv run python -m backend.src.evals.runner --full --repeats 3
 
 # 调用 LLM 和 Docker：运行小规模 SWE-bench Lite 真实缺陷评测
@@ -219,7 +226,7 @@ DevPilot/
 
 默认 Compose 会把 `/var/run/docker.sock` 挂给 Backend 以便本地演示中启动 Sandbox，这相当于给予 Backend 很高的宿主机权限，不应直接作为公网生产部署。现在提供两种强化路径（详见 [`docs/deployment.md`](docs/deployment.md)）：
 
-- **API / Worker 分离**：`docker compose --profile worker up` 启动独立 Sandbox Worker（或设置 `TASK_QUEUE_BACKEND=sqlite|redis`），API 只入队，Worker 通过租约、心跳和幂等领取执行，支持多副本与崩溃自动重投。
+- **API / Worker 分离**：先在 `backend/.env` 设置 `TASK_QUEUE_BACKEND=sqlite`，再运行 `docker compose --profile worker up`；仅启用 profile 不会切换 API 执行模式。SQLite 租约过期会隔离为 dead，并将运行任务标为 interrupted；确认旧 Worker 已停止后显式恢复，不承诺自动故障切换。Redis 是未经生产验收的实验后端。
 - **独立 Docker Host / K8s**：Worker 通过 `DOCKER_HOST` 连接独立 Docker daemon，API 不再持有 docker.sock；`deploy/kubernetes/` 提供 API + Worker 分离部署的示例清单，K8s Job 与 Firecracker 的演进路径同样见部署文档。
 
 ## License
