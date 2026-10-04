@@ -222,3 +222,16 @@ def test_create_task_runner_manual_fallback(
         lambda: False,
     )
     assert "retrieve_code" not in no_rag_runner.agent.allowed_tools
+
+
+def test_worker_auto_policy_matches_inline(tmp_path, monkeypatch):
+    """! @brief 独立 Worker 和 API 对小仓库自动关闭 RAG 的决策一致。"""
+    from backend.src.worker import _worker_runner_factory
+    monkeypatch.setattr(base_tool_agent, "create_client", lambda: object())
+    monkeypatch.setattr(settings, "rag_mode", "auto")
+    (tmp_path / "a.py").write_text("pass", encoding="utf-8")
+    task = _make_task(str(tmp_path), "single_rag")
+    inline = _create_task_runner(task, lambda: False)
+    worker = _worker_runner_factory(task, lambda: False)
+    assert "retrieve_code" not in worker.agent.allowed_tools
+    assert worker.agent.allowed_tools == inline.agent.allowed_tools

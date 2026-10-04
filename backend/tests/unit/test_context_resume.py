@@ -368,3 +368,28 @@ def test_multi_agent_checkpoint_injection_and_restore(
     assert len(resume_events) == 4
     restored_agents = {e["data"]["agent"] for e in resume_events}
     assert restored_agents == {"planner", "coder", "tester", "reviewer"}
+
+
+def test_checkpoint_trim_keeps_anchors_and_complete_tool_groups():
+    """! @brief 截断不能留下孤立 tool，也不能丢掉系统规则与原始任务。"""
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "issue"},
+        {"role": "assistant", "tool_calls": [{"id": "a"}, {"id": "b"}]},
+        {"role": "tool", "tool_call_id": "a", "content": "A"},
+        {"role": "tool", "tool_call_id": "b", "content": "B"},
+        {"role": "user", "content": "continue"},
+    ]
+    assert context_store._trim_messages(messages, 4) == messages[:2] + messages[-1:]
+    assert context_store._trim_messages(messages, 6) == messages
+
+
+def test_checkpoint_rejects_incomplete_tool_protocol():
+    """! @brief 旧版本损坏的快照交由执行服务回退，不能送入模型接口。"""
+    import pytest
+    with pytest.raises(ValueError, match="孤立"):
+        context_store._trim_messages([{"role": "tool", "tool_call_id": "missing"}], 10)
+    with pytest.raises(ValueError, match="尚未完成"):
+        context_store._trim_messages([
+            {"role": "assistant", "tool_calls": [{"id": "a"}]},
+        ], 10)

@@ -280,6 +280,9 @@ class BaseToolAgent:
             # 断点恢复：以注入消息的副本为起点，保证首条 system、第二条 user
             # 与保存时一致；后续追加的新消息不会改动调用方持有的原列表。
             messages: list[ChatCompletionMessageParam] = list(self.initial_messages)
+            # 检查点只消费一次；后续修复轮必须使用新的失败反馈。
+            self.initial_messages = None
+            messages.append({"role": "user", "content": question})
         else:
             messages = [
                 {

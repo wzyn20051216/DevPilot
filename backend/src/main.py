@@ -18,7 +18,7 @@ from .exceptions import DevPilotError, InvalidTaskStateError
 from .llm_client import chat_once
 from .logging_config import configure_logging
 from .config import settings
-from .rag.policy import decide_rag
+from .services.task_policy import task_rag_enabled
 from .schemas import (
     AgentRunRequest,
     ChatRequest,
@@ -56,21 +56,7 @@ from .tools.git_tool import git_diff
 def _create_task_runner(task, cancel_check):
     """! @brief 按任务持久化的执行策略构造实际运行器。"""
 
-    enable_rag = task.execution_mode in {"single_rag", "multi_rag"}
-    # 动态 RAG（技术手册 10.2.3）：仅在 auto 模式下对单 Agent 任务按仓库规模与
-    # 查询歧义重算 enable_rag。manual 模式保持与既有显式 execution_mode 语义完全一致。
-    if settings.rag_mode == "auto" and task.execution_mode.startswith("single_"):
-        decision = decide_rag(task.repo_path, task.question)
-        enable_rag = decision.enabled
-        logger.info(
-            "动态 RAG 决策: task={} enabled={} mode={} files={} signals={} reasons={}",
-            task.id,
-            decision.enabled,
-            decision.mode,
-            decision.metrics.get("source_files"),
-            decision.metrics.get("signals"),
-            decision.reasons,
-        )
+    enable_rag = task_rag_enabled(task)
     if task.execution_mode.startswith("single_"):
         return SingleAgentTaskRunner(
             repo_path=task.repo_path,
@@ -98,7 +84,12 @@ async def lifespan(_app: FastAPI):
 
     configure_logging()
     init_database()
-    interrupted = task_repository.mark_incomplete_as_interrupted()
+    # 队列任务由独立 Worker 持有，API 重启不能更改其执行状态。
+    interrupted = (
+        task_repository.mark_incomplete_as_interrupted()
+        if settings.task_queue_backend == "inline"
+        else 0
+    )
     if interrupted:
         logger.warning("Marked {} unfinished tasks as interrupted", interrupted)
     logger.info(
@@ -449,6 +440,8 @@ def execute_task(task_id: str) -> StreamingResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     if settings.task_queue_backend != "inline":
+        if task.status != "awaiting_approval":
+            raise InvalidTaskStateError(f"当前任务状态无法执行：{task.status}")
         return _enqueue_task_for_worker(task_id, task)
 
     if not task_repository.claim_status(
@@ -481,7 +474,14 @@ def _task_event_stream(task_id: str, after_sequence: int) -> StreamingResponse:
                 yield encode_sse_event(event)
             status = task_repository.get_task(task_id).status
             if status in TERMINAL_TASK_STATUSES and not events:
-                return
+                pending = False
+                if settings.task_queue_backend != "inline" and status in {"interrupted", "failed"}:
+                    from .services.task_queue import get_task_queue
+
+                    entry = get_task_queue().get(task_id)
+                    pending = entry is not None and entry.status in {"queued", "claimed"}
+                if not pending:
+                    return
             time.sleep(0.1)
 
     return StreamingResponse(
@@ -508,8 +508,8 @@ def cancel_task(task_id: str) -> dict[str, str]:
         # 队列模式下取消尚未被 Worker 领取的任务：移出队列并置 cancelled。
         from .services.task_queue import get_task_queue
 
-        get_task_queue().remove(task_id)
         if task_repository.claim_status(task_id, {"awaiting_approval"}, "cancelled"):
+            get_task_queue().remove(task_id)
             return {"task_id": task_id, "status": "cancelled"}
         raise InvalidTaskStateError("任务状态已变化，请刷新后重试")
     # 队列模式下 running 任务的取消：API 只标记 cancelling，Worker 的
@@ -538,6 +538,8 @@ def resume_task(task_id: str) -> StreamingResponse:
         # 队列模式：恢复执行交给 Worker（其 claim_status 接受 interrupted），
         # 上下文检查点注入同样由 Worker 进程的执行服务统一处理。
         task = task_repository.get_task(task_id)
+        if task.status != "interrupted":
+            raise InvalidTaskStateError(f"当前任务状态无法恢复：{task.status}")
         return _enqueue_task_for_worker(task_id, task)
     if not task_repository.claim_status(task_id, {"interrupted"}, "running"):
         current = task_repository.get_task(task_id)

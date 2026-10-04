@@ -133,7 +133,7 @@ def test_lease_expiry_allows_reclaim(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """租约到期后任务应能被其它 Worker 重新领取；未到期不能被抢占。"""
+    """租约到期后隔离，禁止其他 Worker 自动抢占可能仍在执行的任务。"""
 
     repository = _init_db(tmp_path, monkeypatch)
     task = _create_task(repository)
@@ -148,10 +148,11 @@ def test_lease_expiry_allows_reclaim(
     # 直接把租约改写为已过期，模拟时间流逝（避免睡眠抖动）。
     _expire_lease(task.id)
     assert queue.reclaim_expired() == 1
-    entry = queue.claim("worker-2")
-    assert entry is not None
-    assert entry.claimed_by == "worker-2"
-    assert entry.attempts == 2
+    assert queue.claim("worker-2") is None
+    assert queue.get(task.id).status == "dead"
+    # 失去租约的旧 Worker 不能覆盖隔离结果。
+    queue.complete(task.id, succeeded=True, worker_id="worker-1")
+    assert queue.get(task.id).status == "dead"
 
 
 def test_heartbeat_renews_lease(
@@ -251,10 +252,13 @@ def test_run_worker_once_retries_until_dead(
     repository = _init_db(tmp_path, monkeypatch)
     task = _create_task(repository)
 
+    calls = []
+
     class ExplodingOrchestrator:
         def execute_stream(
             self, question: str, plan: list
         ) -> Iterator[AgentEvent]:
+            calls.append(question)
             yield AgentEvent(type="error", agent="coder", message="永远失败")
 
     service = TaskExecutionService(
@@ -273,6 +277,7 @@ def test_run_worker_once_retries_until_dead(
     assert run_worker_once(queue, service, "worker-1") is True
     assert queue.get(task.id).status == "dead"
     assert repository.get_task(task.id).status == "failed"
+    assert calls == ["fix", "fix"]
 
 
 def test_get_task_queue_inline_raises(
@@ -299,6 +304,7 @@ def test_reset_recycles_terminal_entries_only(
     # queued 状态不允许 reset（还在排队，重置会破坏幂等语义）。
     assert queue.reset(task.id, "key-a-2") is False
 
+    queue.claim("worker-1")
     queue.complete(task.id, succeeded=True)
     assert queue.get(task.id).status == "done"
     assert queue.reset(task.id, "key-a-2") is True
@@ -327,3 +333,42 @@ def test_remove_deletes_queued_entry(
     # 重复 remove 幂等返回 False，之后可以重新入队。
     assert queue.remove(task.id) is False
     assert queue.enqueue(task.id, "key-b-2") is True
+
+
+def test_expired_running_task_is_quarantined(tmp_path, monkeypatch):
+    """! @brief 租约丢失必须同步任务状态，且禁止自动重投写代码任务。"""
+    repository = _init_db(tmp_path, monkeypatch)
+    task = _create_task(repository)
+    queue = SQLiteTaskQueue()
+    queue.enqueue(task.id, "lease")
+    queue.claim("old-worker")
+    repository.claim_status(task.id, {"awaiting_approval"}, "running")
+    _expire_lease(task.id)
+    assert queue.claim("new-worker") is None
+    assert repository.get_task(task.id).status == "interrupted"
+    assert queue.get(task.id).status == "dead"
+    assert not queue.heartbeat("old-worker", task.id)
+
+
+def test_completion_requires_claim_owner(tmp_path, monkeypatch):
+    """! @brief 其他 Worker 不能结算当前租约。"""
+    repository = _init_db(tmp_path, monkeypatch)
+    task = _create_task(repository)
+    queue = SQLiteTaskQueue()
+    queue.enqueue(task.id, "owner")
+    queue.claim("new")
+    queue.complete(task.id, succeeded=True, worker_id="old")
+    assert queue.get(task.id).status == "claimed"
+    queue.complete(task.id, succeeded=True, worker_id="new")
+    assert queue.get(task.id).status == "done"
+
+
+def test_remove_does_not_delete_active_claim(tmp_path, monkeypatch):
+    """! @brief 排队取消与领取竞争时不能删除正在执行的租约。"""
+    repository = _init_db(tmp_path, monkeypatch)
+    task = _create_task(repository)
+    queue = SQLiteTaskQueue()
+    queue.enqueue(task.id, "cancel-race")
+    queue.claim("worker")
+    assert not queue.remove(task.id)
+    assert queue.get(task.id).status == "claimed"

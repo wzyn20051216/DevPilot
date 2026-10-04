@@ -81,3 +81,43 @@ def test_execute_failure_is_streamed_and_persisted(
     payload = detail.json()
     assert payload["task"]["status"] == "failed"
     assert [event["type"] for event in payload["events"]] == ["start", "error"]
+
+
+def test_queue_api_restart_preserves_worker_and_rejects_invalid_commands(tmp_path, monkeypatch):
+    """! @brief API 重启不打断独立 Worker，队列端点遵守任务状态约束。"""
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "queue.db")
+    monkeypatch.setattr(main.settings, "task_queue_backend", "sqlite")
+    connection.init_database()
+    task = task_repository.create_task(repo_path=str(tmp_path), question="fix", plan=[])
+    task_repository.claim_status(task.id, {"awaiting_approval"}, "running")
+    with TestClient(app) as client:
+        assert task_repository.get_task(task.id).status == "running"
+        assert client.post(f"/api/tasks/{task.id}/execute").status_code == 409
+        assert client.post(f"/api/tasks/{task.id}/resume").status_code == 409
+        task_repository.claim_status(task.id, {"running"}, "completed")
+        assert client.post(f"/api/tasks/{task.id}/execute").status_code == 409
+
+
+def test_queued_resume_stream_waits_for_worker(monkeypatch):
+    """! @brief interrupted 已入队时 SSE 不能在 Worker 领取前提前结束。"""
+    import asyncio
+    from types import SimpleNamespace
+    from backend.src.services import task_queue
+
+    events = iter([[], [{"sequence": 1, "type": "final", "agent": "coder", "iteration": 1,
+                        "message": "done", "data": {}, "created_at": "now"}], []])
+    statuses = iter(["interrupted", "completed", "completed"])
+    monkeypatch.setattr(main.settings, "task_queue_backend", "sqlite")
+    monkeypatch.setattr(main, "task_repository", SimpleNamespace(
+        get_events_after=lambda *_: next(events),
+        get_task=lambda *_: SimpleNamespace(status=next(statuses)),
+    ))
+    monkeypatch.setattr(task_queue, "get_task_queue", lambda: SimpleNamespace(
+        get=lambda _: SimpleNamespace(status="queued"),
+    ))
+    monkeypatch.setattr(main.time, "sleep", lambda _: None)
+
+    async def consume():
+        return [item async for item in main._task_event_stream("task", 0).body_iterator]
+
+    assert "done" in "".join(asyncio.run(consume()))

@@ -401,3 +401,15 @@ def test_initial_messages_injected(monkeypatch: MonkeyPatch) -> None:
     first_messages = client.chat.completions.requests[0]["messages"]
     assert first_messages[0] == initial[0]
     assert first_messages[1] == initial[1]
+
+
+def test_restored_context_consumed_once_and_new_feedback_used(monkeypatch):
+    """! @brief 恢复后下一轮修复必须使用新问题，不能再次套用旧快照。"""
+    initial = [{"role": "system", "content": "sys"}, {"role": "user", "content": "old"}]
+    agent, client = _build_agent(monkeypatch, [_response(content="ok"), _response(content="ok")], initial_messages=initial)
+    list(agent.run_stream("resume"))
+    assert client.chat.completions.requests[0]["messages"][2]["content"] == "resume"
+    list(agent.run_stream("new failure feedback"))
+    messages = client.chat.completions.requests[1]["messages"]
+    assert messages[1]["content"] == "new failure feedback"
+    assert initial == [{"role": "system", "content": "sys"}, {"role": "user", "content": "old"}]
