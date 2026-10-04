@@ -238,11 +238,13 @@ def test_mysql_concurrent_claim_is_exclusive(monkeypatch: MonkeyPatch) -> None:
 
 
 @pytest.mark.skipif(not REDIS_URL, reason="未配置 TEST_REDIS_URL")
-def test_redis_queue_semantics(monkeypatch: MonkeyPatch) -> None:
+def test_redis_queue_semantics(
+    monkeypatch: MonkeyPatch, sqlite_queue: tuple[SQLTaskQueue, TaskRepository],
+) -> None:
     """Redis（Lua 原子实现）必须与 SQL 版语义一致。"""
 
     monkeypatch.setattr(settings, "redis_url", REDIS_URL)
-    queue, repo = RedisTaskQueue(), TaskRepository()
+    queue, repo = RedisTaskQueue(), sqlite_queue[1]
     _flush(queue)
     try:
         _assert_queue_semantics(queue, repo, _make_redis_expirer(queue))
@@ -251,11 +253,13 @@ def test_redis_queue_semantics(monkeypatch: MonkeyPatch) -> None:
 
 
 @pytest.mark.skipif(not REDIS_URL, reason="未配置 TEST_REDIS_URL")
-def test_redis_concurrent_claim_is_exclusive(monkeypatch: MonkeyPatch) -> None:
+def test_redis_concurrent_claim_is_exclusive(
+    monkeypatch: MonkeyPatch, sqlite_queue: tuple[SQLTaskQueue, TaskRepository],
+) -> None:
     """Lua 脚本在 Redis 单线程内执行，领取必须互斥且不丢条目。"""
 
     monkeypatch.setattr(settings, "redis_url", REDIS_URL)
-    queue, repo = RedisTaskQueue(), TaskRepository()
+    queue, repo = RedisTaskQueue(), sqlite_queue[1]
     _flush(queue)
     try:
         _assert_concurrent_claim_is_exclusive(queue, repo)
@@ -264,12 +268,14 @@ def test_redis_concurrent_claim_is_exclusive(monkeypatch: MonkeyPatch) -> None:
 
 
 @pytest.mark.skipif(not REDIS_URL, reason="未配置 TEST_REDIS_URL")
-def test_redis_enqueue_depth_backpressure(monkeypatch: MonkeyPatch) -> None:
+def test_redis_enqueue_depth_backpressure(
+    monkeypatch: MonkeyPatch, sqlite_queue: tuple[SQLTaskQueue, TaskRepository],
+) -> None:
     """队列深度上限生效时抛 QueueFullError。"""
 
     monkeypatch.setattr(settings, "redis_url", REDIS_URL)
     monkeypatch.setattr(settings, "task_queue_max_depth", 2)
-    queue, repo = RedisTaskQueue(), TaskRepository()
+    queue, repo = RedisTaskQueue(), sqlite_queue[1]
     _flush(queue)
     try:
         for index in range(2):

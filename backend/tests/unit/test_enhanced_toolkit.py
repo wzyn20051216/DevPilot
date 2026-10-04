@@ -73,7 +73,9 @@ def test_syntax_guard_is_off_by_default(repo: Path) -> None:
     assert result["changed"] is True
 
 
-def test_enhanced_switch_only_adds_documented_differences(repo: Path) -> None:
+def test_enhanced_switch_only_adds_documented_differences(repo: Path, monkeypatch) -> None:
+    """! @brief 策略开关测试隔离模型客户端，不依赖本机密钥。"""
+    monkeypatch.setattr("backend.src.agents.base_tool_agent.create_client", lambda: object())
     base = SingleDeveloperAgent(str(repo), enable_rag=False)
     enhanced = SingleDeveloperAgent(str(repo), enable_rag=False, enhanced=True)
     assert "code_outline" not in base.allowed_tools
