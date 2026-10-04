@@ -46,7 +46,7 @@ def _schedule(instances: list[str], repeats: int) -> list[dict[str, Any]]:
     for repeat in range(1, repeats + 1):
         for index, instance in enumerate(instances):
             variants = ["single_no_rag", "single_adaptive"]
-            if ((repeat - 1) * len(instances) + index) % 2:
+            if (repeat - 1 + index) % 2:
                 variants.reverse()
             for variant in variants:
                 scheduled.append({

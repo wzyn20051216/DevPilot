@@ -33,3 +33,77 @@ def test_provider_errors_are_distinct_from_algorithm_failures() -> None:
     assert _is_provider_blocked({"error": "Error code: 429 - rate limit"})
     assert not _is_provider_blocked({"error": "test_402.py::test_429 failed"})
     assert not _is_provider_blocked({"error": None})
+
+
+def test_each_case_changes_order_even_when_number_of_cases_is_even() -> None:
+    """! @brief 两题计划也必须逐轮交换先后，避免任务难度与时间段绑定。"""
+
+    jobs = _schedule(["a", "b"], 3)
+    for instance in ["a", "b"]:
+        first = [
+            jobs[index]["variant"] for index in range(0, len(jobs), 2)
+            if jobs[index]["instance_id"] == instance
+        ]
+        assert first[0] != first[1]
+        assert first[0] == first[2]
+
+
+def test_resume_retries_provider_interruption_and_preserves_original_trace(monkeypatch, tmp_path) -> None:
+    """! @brief 模拟 402 后续跑，验证原作业重试且中断轨迹不被覆盖。"""
+
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    import pytest
+    from backend.scripts import paired_real_world as driver
+    from backend.src import config, evals
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("LLM_API_KEY=test-key\nLLM_MODEL=test-model\n", encoding="utf-8")
+    (tmp_path / "swebench_datasets").mkdir()
+    (tmp_path / "swebench_datasets/verified.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(config, "settings", config.Settings(_env_file=env_file))
+    monkeypatch.setattr(driver, "_code_hash", lambda root: "frozen-source")
+    monkeypatch.setattr(driver.subprocess, "check_output", lambda *args, **kwargs: "image-id\n")
+    monkeypatch.setattr(sys, "argv", [
+        "paired", "--data-root", str(tmp_path), "--env-file", str(env_file),
+        "--run-id", "resume", "--instance", "a", "--repeats", "1",
+    ])
+    calls = []
+    run_root = tmp_path / "paired_real_world/resume"
+
+    def evaluate(instance, variant, run_id, excluded_targets, repeat_index):
+        """! @brief 第一次模拟供应商中断，随后两次模拟正常完成。"""
+
+        calls.append((variant, repeat_index))
+        interrupted = len(calls) == 1
+        trace = run_root / f"{variant}.jsonl"
+        patch = run_root / f"{variant}.patch"
+        trace.write_text("interrupted" if interrupted else "completed", encoding="utf-8")
+        patch.write_text("", encoding="utf-8")
+        return {
+            "instance_id": "a", "variant": variant, "repeat_index": repeat_index,
+            "error": "Error code: 402 - Insufficient Balance" if interrupted else None,
+            "success": not interrupted, "total_tokens": 10, "elapsed_seconds": 0.1,
+            "trace_path": str(trace), "patch_path": str(patch),
+        }
+
+    fake_evaluator = SimpleNamespace(
+        load_swebench=lambda key: {"a": SimpleNamespace(image="fake:latest")},
+        audit_real_instance=lambda instance, run: {
+            "instance_id": "a", "baseline_failed": True, "unstable_pass_to_pass": [],
+        },
+        evaluate_real_instance=evaluate,
+    )
+    monkeypatch.setattr(evals, "real_world", fake_evaluator)
+    with pytest.raises(RuntimeError, match="供应商"):
+        driver.main()
+    driver.main()
+    report = json.loads((run_root / "report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "completed"
+    assert len(report["rows"]) == 2
+    assert calls == [("single_no_rag", 1), ("single_no_rag", 1), ("single_adaptive", 1)]
+    assert len(report["provider_failures"]) == 1
+    from pathlib import Path
+    assert Path(report["provider_failures"][0]["trace_path"]).read_text(encoding="utf-8") == "interrupted"

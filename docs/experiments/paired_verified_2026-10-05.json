@@ -1,0 +1,168 @@
+{
+  "run_id": "paired_verified_20261005_v6",
+  "status": "waiting_for_provider_balance",
+  "created_at": "2026-10-04T17:41:13.438010+00:00",
+  "comparison_completed": false,
+  "complete_model_results": 0,
+  "planned_model_runs": 12,
+  "identity": {
+    "source_sha256": "3a6848d188c35b695d0e641a50547ce2e6b40faa9ae1b04af4a2e6d5d5d969ce",
+    "dataset_sha256": "a10f66810a84bdfb40479421cd2992682ad7cd96e69e7acd88322e87e5b8748a",
+    "instances": [
+      "astropy__astropy-13977",
+      "scikit-learn__scikit-learn-26323"
+    ],
+    "model": "deepseek-v4-flash",
+    "temperature": 0.2,
+    "reasoning_effort": null,
+    "repeats": 3,
+    "max_iterations_both": 14,
+    "agent_token_budget": 250000,
+    "tool_observation_max_chars": 10000,
+    "recent_messages": 12,
+    "history_summary_max_chars": 6000,
+    "dedupe_observations": true,
+    "llm_timeout_seconds": 60.0,
+    "llm_max_retries": 2,
+    "strategy_thresholds": {
+      "strategy_router_enabled": true,
+      "strategy_outline_min_lines": 800,
+      "strategy_outline_min_repo_files": 400,
+      "strategy_python_min_ratio": 0.5
+    },
+    "image_ids": {
+      "astropy__astropy-13977": "sha256:ec43fcbcea2c26b6f74796a177fbbaceb754a1152b0ce47ecbe4fab2e04caca7",
+      "scikit-learn__scikit-learn-26323": "sha256:b39ec40bfd83dd1b8ebf5997db582ca459c5c835e6488f35f157cf076bbb7ecb"
+    }
+  },
+  "schedule": [
+    {
+      "instance_id": "astropy__astropy-13977",
+      "variant": "single_no_rag",
+      "repeat_index": 1
+    },
+    {
+      "instance_id": "astropy__astropy-13977",
+      "variant": "single_adaptive",
+      "repeat_index": 1
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "variant": "single_adaptive",
+      "repeat_index": 1
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "variant": "single_no_rag",
+      "repeat_index": 1
+    },
+    {
+      "instance_id": "astropy__astropy-13977",
+      "variant": "single_adaptive",
+      "repeat_index": 2
+    },
+    {
+      "instance_id": "astropy__astropy-13977",
+      "variant": "single_no_rag",
+      "repeat_index": 2
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "variant": "single_no_rag",
+      "repeat_index": 2
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "variant": "single_adaptive",
+      "repeat_index": 2
+    },
+    {
+      "instance_id": "astropy__astropy-13977",
+      "variant": "single_no_rag",
+      "repeat_index": 3
+    },
+    {
+      "instance_id": "astropy__astropy-13977",
+      "variant": "single_adaptive",
+      "repeat_index": 3
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "variant": "single_adaptive",
+      "repeat_index": 3
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "variant": "single_no_rag",
+      "repeat_index": 3
+    }
+  ],
+  "calibration_source_run_id": "paired_verified_20261005_v4",
+  "audits": [
+    {
+      "instance_id": "astropy__astropy-13977",
+      "baseline_failed": true,
+      "fail_to_pass_failed": true,
+      "pass_to_pass_passed": false,
+      "unstable_pass_to_pass": [],
+      "gold_passed": true,
+      "gold_unexpected_failures": [],
+      "targets": [
+        "astropy/units/tests/test_quantity_ufuncs.py",
+        "astropy/units/tests/test_quantity.py"
+      ],
+      "baseline_returncode": 1,
+      "gold_returncode": 0
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "baseline_failed": true,
+      "fail_to_pass_failed": true,
+      "pass_to_pass_passed": true,
+      "unstable_pass_to_pass": [],
+      "gold_passed": true,
+      "gold_unexpected_failures": [],
+      "targets": [
+        "sklearn/compose/tests/test_column_transformer.py"
+      ],
+      "baseline_returncode": 1,
+      "gold_returncode": 0
+    }
+  ],
+  "excluded_instance": {
+    "instance_id": "psf__requests-2317",
+    "reason": "gold_patch still fails FAIL_TO_PASS under no-network sandbox",
+    "source_run_id": "paired_verified_20261005_v3"
+  },
+  "provider_interruptions": [
+    {
+      "source_run_id": "paired_verified_20261005_v3",
+      "instance_id": "astropy__astropy-13977",
+      "variant": "single_adaptive",
+      "iteration": 2,
+      "total_tokens": 3213,
+      "elapsed_seconds": 26.848425,
+      "provider_http_status": 402,
+      "counted_in_success_rate": false
+    }
+  ],
+  "tests": {
+    "full_suite": {
+      "tests": 204,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 15,
+      "passed": 189
+    },
+    "targeted_after_order_fix": {
+      "passed": 8,
+      "failed": 0
+    }
+  },
+  "notes": [
+    "包含接续前未提交的Agent工作流WIP；不是发布版本性能对比",
+    "冻结代码由source_manifest逐文件记录；在本机被忽略的运行目录保存",
+    "温度固定；API未设置随机种子；仅两道题，不能形成泛化或榜单成绩",
+    "src与v4校准代码相同，仅driver的续跑证据归档和顺序安排改变"
+  ]
+}
