@@ -111,7 +111,12 @@ def test_real_world_verifier_protects_tests_and_test_config() -> None:
 
 
 def test_real_world_audit_extracts_unstable_pytest_nodes() -> None:
-    """环境基线校准应只提取 pytest 摘要中的明确失败节点。"""
+    """环境基线校准应提取 pytest 摘要中的明确失败节点，并归一化参数化后缀。
+
+    参数化测试在失败摘要里带 ``[参数]`` 后缀，而 SWE-bench 的 FAIL_TO_PASS
+    存的是不带后缀的节点名（甚至被换行截断成 ``...[\n``）。若不归一化，
+    ``issubset`` 匹配会失败（astroid-1866 实测）。
+    """
 
     assert _failed_pytest_nodes(
         {
@@ -124,7 +129,7 @@ def test_real_world_audit_extracts_unstable_pytest_nodes() -> None:
         }
     ) == [
         "tests/test_a.py::test_one",
-        "tests/test_b.py::test_value[hello world]",
+        "tests/test_b.py::test_value",
         "tests/test_c.py::test_setup",
     ]
 
@@ -171,7 +176,11 @@ def test_real_world_invalid_environment_persists_diagnostics(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """金补丁也无法通过时，必须在调用 Agent 前留下可诊断报告。"""
+    """金补丁也无法通过时，必须在调用 Agent 前留下可诊断报告并跳过该实例。
+
+    无效环境不应终止整批评测（否则 5 个 pvlib 的 np.Inf 会拖垮 20 实例），
+    而是如实记入报告、跳过不进入成功率分母，其余有效实例继续跑。
+    """
 
     from backend.src.evals import real_world
 
@@ -205,16 +214,14 @@ def test_real_world_invalid_environment_persists_diagnostics(
         lambda *_args, **_kwargs: pytest.fail("无效环境不得调用 Agent"),
     )
 
-    with pytest.raises(RuntimeError, match="诊断报告"):
-        real_world.run_real_world_evaluation(
-            instance_ids=(instance.instance_id,),
-            variants=("single_no_rag",),
-        )
+    # 无效环境不再抛 RuntimeError，而是正常返回并跳过。
+    report_path = real_world.run_real_world_evaluation(
+        instance_ids=(instance.instance_id,),
+        variants=("single_no_rag",),
+    )
 
-    reports = list(tmp_path.glob("*/report.json"))
-    assert len(reports) == 1
-    payload = json.loads(reports[0].read_text(encoding="utf-8"))
-    assert payload["status"] == "invalid_environment"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["status"] in {"partial_invalid_environment", "completed"}
     assert payload["rows"] == []
     assert payload["audits"][0]["gold_result"]["stderr"] == "import failed"
 

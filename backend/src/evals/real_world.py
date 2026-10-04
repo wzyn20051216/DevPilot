@@ -101,9 +101,13 @@ def _sandbox_profile(instance: SweBenchInstance) -> SandboxProfile:
 
     return SandboxProfile(
         image=instance.image,
+        # 不用 `conda activate testbed`：部分官方镜像（sqlfluff/pyvista）的
+        # conda CLI 与 base python 版本不匹配，`conda` 命令本身抛
+        # `TypeError: 'module' object is not callable`，导致激活失败、测试跑不起来。
+        # 直接改 PATH 指向 testbed 环境，绕过 conda CLI，对全部镜像通用
+        # （实测 pvlib/sqlfluff/pyvista 均能正确拿到 testbed 的 python+pytest）。
         command_prefix=(
-            "source /opt/miniconda3/bin/activate",
-            "conda activate testbed",
+            "export PATH=/opt/miniconda3/envs/testbed/bin:$PATH",
             "export PYTHONDONTWRITEBYTECODE=1",
         ),
         mount_target="/testbed",
@@ -357,14 +361,30 @@ def _verification_files(instance: SweBenchInstance) -> list[str]:
     )
 
 
+def _normalize_pytest_node(node: str) -> str:
+    """! @brief 归一化 pytest 节点名，去掉参数化测试的 ``[...]`` 后缀。
+
+    参数化测试（如 ``test_string_format_uninferable["{:4x}"]``）在失败摘要里
+    会带上 ``[参数]`` 后缀，而 SWE-bench 的 FAIL_TO_PASS 存的是不带后缀的
+    ``file::Class::test_name``。若不做归一化，``issubset`` 会匹配失败，导致
+    参数化实例被误判为「基线未失败」（astroid-1866 实测）。
+    """
+
+    return node.split("[", 1)[0]
+
+
 def _failed_pytest_nodes(result: dict[str, Any]) -> list[str]:
-    """! @brief 从 pytest 终端摘要提取失败或错误节点。"""
+    """! @brief 从 pytest 终端摘要提取失败或错误节点（参数化后缀已归一化）。"""
 
     nodes: list[str] = []
     for line in str(result.get("stdout", "")).splitlines():
         for prefix in ("FAILED ", "ERROR "):
             if line.startswith(prefix):
-                nodes.append(line.removeprefix(prefix).split(" - ", 1)[0].strip())
+                nodes.append(
+                    _normalize_pytest_node(
+                        line.removeprefix(prefix).split(" - ", 1)[0].strip()
+                    )
+                )
                 break
     return nodes
 
@@ -431,15 +451,22 @@ def audit_real_instance(instance: SweBenchInstance, run_id: str) -> dict[str, An
         _verification_files(instance),
     )
     gold_failures = _failed_pytest_nodes(gold)
-    gold_unexpected = set(gold_failures).intersection(instance.fail_to_pass)
+    # SWE-bench 的 FAIL_TO_PASS/PASS_TO_PASS 节点名可能自带参数化后缀（如
+    # ``test_safe_create_replace_file[utf8_create]``），甚至被换行截断成
+    # ``...[\n``（astroid-1866 实测）。比较前统一归一化掉 ``[`` 后缀，否则
+    # issubset 匹配不上，参数化实例被误判为「基线未失败」。
+    fail_to_pass_normalized = {_normalize_pytest_node(n) for n in instance.fail_to_pass}
+    pass_to_pass_normalized = {_normalize_pytest_node(n) for n in instance.pass_to_pass}
+    baseline_failures_set = set(baseline_failures)
+    gold_unexpected = set(gold_failures).intersection(fail_to_pass_normalized)
     gold_passed = bool(gold["passed"]) or (
         bool(gold_failures)
         and not gold_unexpected
         and not bool(gold.get("timed_out"))
     )
-    fail_to_pass_failed = set(instance.fail_to_pass).issubset(baseline_failures)
+    fail_to_pass_failed = fail_to_pass_normalized.issubset(baseline_failures_set)
     pass_to_pass_failures = [
-        node for node in baseline_failures if node in set(instance.pass_to_pass)
+        node for node in baseline_failures if node in pass_to_pass_normalized
     ]
     return {
         "instance_id": instance.instance_id,
@@ -698,16 +725,23 @@ def run_real_world_evaluation(
 
     invalid = [audit["instance_id"] for audit in audits if not audit["baseline_failed"]]
     if invalid:
-        write_report("invalid_environment")
-        raise RuntimeError(
-            "真实用例基线或金补丁校准失败: "
-            + ", ".join(invalid)
-            + f"；诊断报告: {report_path}"
+        # 环境无效的实例（如 pvlib 官方镜像用 NumPy 2.x，历史代码访问已删除
+        # 的 np.Inf，conftest 导入即崩）不能拿去考 Agent，但也不应让它们
+        # 终止整批评测。如实记为 skipped_invalid_environment 并跳过，
+        # 其余有效实例继续跑。这与 docs/current-evaluation.md 对 pvlib-1707
+        # 的 invalid_environment 标记一致。
+        skipped = {audit["instance_id"]: audit for audit in audits if not audit["baseline_failed"]}
+        write_report("partial_invalid_environment")
+        print(
+            "跳过环境无效实例（不进入成功率分母）: "
+            + ", ".join(sorted(skipped))
         )
 
     write_report("running")
     for instance in instances:
         audit = next(item for item in audits if item["instance_id"] == instance.instance_id)
+        if not audit["baseline_failed"]:
+            continue
         for variant in variants:
             for repeat_index in range(1, repeats + 1):
                 row = evaluate_real_instance(
