@@ -1,6 +1,7 @@
 """! @brief 基于 SWE-bench Lite 开源 Issue 的真实仓库评测。"""
 
 import argparse
+import hashlib
 import json
 import random
 import shutil
@@ -19,6 +20,7 @@ from ..agents.single_developer_agent import SingleDeveloperAgent
 from ..config import settings
 from ..sandbox.docker_runner import SandboxProfile, use_sandbox_profile
 from ..tools.test_tool import run_tests
+from ..tools.write_tool import use_write_guard
 from .dataset import PROJECT_ROOT
 from .runner import VARIANTS, collect_event_metrics, collect_timing, collect_usage
 
@@ -274,12 +276,9 @@ def create_real_workspace(
     _run_git(["config", "core.autocrlf", "false"], cwd=destination)
     _run_git(["config", "core.eol", "lf"], cwd=destination)
     _run_git(["checkout", "--detach", instance.base_commit], cwd=destination)
-    # Git for Windows 2.55.x 的 checkout 在切换提交时存在竞态缺陷：index 已
-    # 更新，但部分工作树文件被静默漏写（git status 显示假性删除）。实测
-    # 2026-10-03 在 marshmallow-1359 的评测中，8 个小文件未落盘，导致候选
-    # 补丁携带伪删除 hunk、verifier 的 git apply 直接失败。reset --hard 强制
-    # 工作树与 index 对齐；随后校验必须完全干净，否则快速失败，避免烧掉
-    # 一次 LLM 运行后才发现工作区不完整。
+    # 曾在 marshmallow-1359 观察到 checkout 后工作树与 index 不一致，
+    # 根因尚未独立证实。reset --hard 强制对齐，再校验工作区完全干净，
+    # 避免把残缺工作树中的伪删除当成 Agent 修改。
     _run_git(["reset", "--hard"], cwd=destination)
     residual = _run_git(["status", "--porcelain"], cwd=destination).strip()
     if residual:
@@ -494,7 +493,9 @@ def audit_real_instance(instance: SweBenchInstance, run_id: str) -> dict[str, An
 
 def _run_agent(instance: SweBenchInstance, variant: str, workspace: Path):
     enable_rag = variant in {"single_rag", "multi_rag"}
-    with use_sandbox_profile(_sandbox_profile(instance)):
+    with use_sandbox_profile(_sandbox_profile(instance)), use_write_guard(
+        lambda path: bool(_protected_candidate_paths([path]))
+    ):
         if variant.startswith("single_"):
             return list(
                 SingleDeveloperAgent(str(workspace), enable_rag=enable_rag).run_stream(
@@ -581,7 +582,7 @@ def evaluate_real_instance(
         verification_exception = f"Verifier {type(exc).__name__}: {exc}"
     patch_path = REAL_EVAL_ROOT / run_id / "patches" / f"{instance.instance_id}__{suffix}.patch"
     patch_path.parent.mkdir(parents=True, exist_ok=True)
-    patch_path.write_text(candidate_patch, encoding="utf-8")
+    patch_path.write_text(candidate_patch, encoding="utf-8", newline="\n")
     tool_calls, iterations, repair_rounds = collect_event_metrics(events)
     prompt_tokens, completion_tokens, total_tokens = collect_usage(events)
     llm_seconds, tool_seconds = collect_timing(events)
@@ -620,6 +621,7 @@ def evaluate_real_instance(
         "patch_path": str(patch_path),
         "trace_path": str(trace_path),
         "patch_bytes": len(candidate_patch.encode("utf-8")),
+        "patch_sha256": hashlib.sha256(candidate_patch.encode("utf-8")).hexdigest(),
         "excluded_candidate_paths": protected_paths,
         "excluded_unstable_tests": list(excluded_targets),
         "verification_targets": verification["targets"],

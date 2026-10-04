@@ -49,6 +49,7 @@ from backend.src.evals.runner import (
 )
 from backend.src.main import app
 from backend.src.models.agent_state import AgentEvent
+from backend.src.tools.write_tool import use_write_guard, write_file
 
 
 def test_load_add_bug_case() -> None:
@@ -108,6 +109,26 @@ def test_real_world_verifier_protects_tests_and_test_config() -> None:
         "src/module_test.py",
         "setup.cfg",
     ]
+
+
+def test_real_world_write_guard_blocks_test_edits(tmp_path: Path) -> None:
+    """! @brief 评测期间测试文件不可被改写，离开上下文后普通写入恢复。"""
+
+    test_dir = tmp_path / "tests"
+    test_dir.mkdir()
+    test_file = test_dir / "test_example.py"
+    test_file.write_text("assert False\n", encoding="utf-8")
+    source_file = tmp_path / "source.py"
+    source_file.write_text("old\n", encoding="utf-8")
+
+    with use_write_guard(lambda path: bool(_protected_candidate_paths([path]))):
+        with pytest.raises(ValueError, match="禁止修改测试"):
+            write_file(str(tmp_path), "tests/test_example.py", "assert True\n")
+        write_file(str(tmp_path), "source.py", "new\n")
+
+    assert test_file.read_text(encoding="utf-8") == "assert False\n"
+    assert source_file.read_text(encoding="utf-8") == "new\n"
+    write_file(str(tmp_path), "tests/test_example.py", "assert True\n")
 
 
 def test_real_world_audit_extracts_unstable_pytest_nodes() -> None:

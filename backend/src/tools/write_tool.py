@@ -1,6 +1,9 @@
 ###写文件
 import os
 import tempfile
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from .file_tool import resolve_safe_path
 
@@ -10,6 +13,31 @@ PROTECTED_FILES={
     ".env.local",
     ".env.production",
 }
+
+# 真实评测可按运行上下文额外保护测试文件；普通开发任务不启用此限制。
+_write_guard: ContextVar[Callable[[str], bool] | None] = ContextVar(
+    "devpilot_write_guard", default=None
+)
+
+
+@contextmanager
+def use_write_guard(guard: Callable[[str], bool]) -> Iterator[None]:
+    """! @brief 在当前运行上下文内禁止写入满足 guard 的相对路径。"""
+
+    token = _write_guard.set(guard)
+    try:
+        yield
+    finally:
+        _write_guard.reset(token)
+
+
+def _check_write_guard(repo_path: str, path: Path) -> None:
+    """! @brief 在文件修改前执行当前评测写入边界。"""
+
+    guard = _write_guard.get()
+    relative_path = path.relative_to(Path(repo_path).resolve()).as_posix()
+    if guard is not None and guard(relative_path):
+        raise ValueError(f"真实评测禁止修改测试或测试配置: {relative_path}")
 
 
 def replace_in_file(
@@ -29,6 +57,7 @@ def replace_in_file(
     """
 
     path = resolve_safe_path(Path(repo_path), relative_path=file_path)
+    _check_write_guard(repo_path, path)
     if path.name in PROTECTED_FILES or ".git" in path.parts or ".devpilot" in path.parts:
         raise ValueError(f"禁止操作受保护路径: {file_path}")
     if not path.is_file():
@@ -72,6 +101,7 @@ def write_file(
     """
     #解析得到安全的绝对路径，做路径月结防护，防止跳出目录
     path=resolve_safe_path(Path(repo_path),relative_path=file_path)
+    _check_write_guard(repo_path, path)
     #禁止修改敏感文件
     if path.name in PROTECTED_FILES:
         raise ValueError(f"禁止操作{path.name}{repo_path}")
