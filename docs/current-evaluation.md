@@ -1,10 +1,10 @@
 # DevPilot 当前评测结论
 
-更新时间：2026-10-03。本文记录当前代码和 DeepSeek 实际调用得到的结果，用于区分已经验证的能力、尚不充分的证据和后续工作。
+更新时间：2026-10-04。本文记录当前代码和 DeepSeek 实际调用得到的结果，用于区分已经验证的能力、尚不充分的证据和后续工作。
 
 ## 真实缺陷评测
 
-评测从 `SWE-bench/SWE-bench_Lite` 的 dev split 选择 3 个 Python 缺陷。每个实例固定官方 base commit，并在对应的官方 Docker 镜像中执行受影响测试文件。运行前分别验证错误基线确实失败、官方金补丁能够通过；候选补丁中的测试与测试配置改动不会进入独立 verifier。官方资料可参考 [SWE-bench 数据集说明](https://github.com/SWE-bench/SWE-bench/blob/main/docs/guides/datasets.md)、[SWE-bench Lite](https://www.swebench.com/lite.html) 和 [Docker 评测说明](https://github.com/SWE-bench/SWE-bench/blob/main/docs/guides/docker_setup.md)。
+评测从 `SWE-bench/SWE-bench_Lite` 的 dev split 选取真实 Python 缺陷。首轮对照使用 3 题，第五轮分层抽样 20 题。每个实例固定官方 base commit，并在对应的官方 Docker 镜像中执行受影响测试文件。运行前分别验证错误基线确实失败、官方金补丁能够通过；候选补丁中的测试与测试配置改动不会进入独立 verifier。官方资料可参考 [SWE-bench 数据集说明](https://github.com/SWE-bench/SWE-bench/blob/main/docs/guides/datasets.md)、[SWE-bench Lite](https://www.swebench.com/lite.html) 和 [Docker 评测说明](https://github.com/SWE-bench/SWE-bench/blob/main/docs/guides/docker_setup.md)。
 
 ### 先说人话：这里的“实例”和“镜像”是什么
 
@@ -39,7 +39,7 @@
 | RAG 检索 | 9 条标注查询 | 检索器能否找到目标文件 |
 | 真实 A/B 对照 | 3 个实例，各跑无 RAG 与 RAG | RAG 是否提高真实修复率 |
 | 真实回归评测 | 7 个实例，只跑当前默认 `single_no_rag` | 默认策略在包含旧题的回归集上的表现 |
-| 大样本扩样 | 20 实例分层抽样 × 3 次重复，11 个有效实例 | 更稳定的成功率与方差（第五轮，21/33 ≈ 63.6%） |
+| 大样本扩样 | 20 实例分层抽样 × 3 次重复，11 个有效实例 | 第五轮完成 33 次运行，21 次成功；9/20 未进入模型阶段 |
 
 因此，“评测池 23 个”是**可选题库规模**，“本地有多少镜像”是**已准备多少考试环境**，“成功率 63.6%（21/33）”才是**当前最大一轮已完成真实实验**。这三个数字不能混在一起。
 
@@ -86,11 +86,11 @@
 
 **修复后的真实对照（`marshmallow-1359` × `single_no_rag` × 1）**：批次 `0e453ee58419424994373fc3fc0cf145`，`success=True tests=True`，总 Token **66,778**（prompt 63,226 / completion 3,552），对比上下文压缩后的历史基线 93,741 Token **下降 28.8%**；Agent 执行耗时 78.5 秒。`prompt_cache_hit_tokens=32,000`，输入 Token 缓存命中率 50.6%。Agent 实际调用 `protocol_probe` 验证 Issue 复现后完成单点修复（`replace_in_file` 1 次、`run_test` 1 次）。单实例单次运行，不能外推为总体成功率；Token 对比同样受模型随机性影响，现有重复次数不足以估计历史波动，更不能归因于某一项优化。
 
-**评测扩容能力（10.2.1）**：当前候选池收录 SWE-bench Lite dev split 中的 23 个实例（`REAL_INSTANCE_POOL`），支持 `--pool N` 按 repo 分层轮询抽样与 `--repeats N` 同实例重复运行，报告新增按 (instance, variant) 聚合的均值/标准差。完整 20 实例 × 多次重复的大样本实验待执行，命令见下文。
+**评测扩容能力（10.2.1）**：当前候选池收录 SWE-bench Lite dev split 中的 23 个实例（`REAL_INSTANCE_POOL`），支持 `--pool N` 按 repo 分层轮询抽样与 `--repeats N` 同实例重复运行，报告新增按 (instance, variant) 聚合的均值/标准差。第五轮已按 `--pool 20 --repeats 3` 执行，20 题中 9 题未通过校准，实际调用模型的是 11 题 × 3 次；见下文。
 
 ## 第四轮：7 实例分层真实评测（2026-10-03 下午）
 
-用本地已缓存的全部 7 个真实实例（跨 marshmallow / pydicom / astroid 三个仓库）跑了 `single_no_rag × 1` 的真实评测，批次 `64475892baa647a7878ed43a81eed865`。这是当前有完整报告的最大单批回归评测。它复用了第一轮的 marshmallow-1359、pydicom-1139、astroid-1268，以及已针对失败改过提示词的 astroid-1196，不能称为无污染留出集。
+用本地已缓存的全部 7 个真实实例（跨 marshmallow / pydicom / astroid 三个仓库）跑了 `single_no_rag × 1` 的真实评测，批次 `64475892baa647a7878ed43a81eed865`。这是第四轮的完整回归报告。它复用了第一轮的 marshmallow-1359、pydicom-1139、astroid-1268，以及已针对失败改过提示词的 astroid-1196，不能称为无污染留出集。
 
 | 实例 | 结果 | 总 Token | 失败点（verifier） |
 |---|---|---:|---|
@@ -113,9 +113,9 @@
 
 ## 第五轮：20 实例分层抽样 × 3 次重复（2026-10-03 晚）
 
-用 `--pool 20 --repeats 3` 从 dev split 分层抽样 20 个实例，每个有效实例用 `single_no_rag` 重复运行 3 次，批次 `c1f4af0e7bf141b0bb4bb77da165d610`。这是当前最大规模的真实评测。抽中的 20 个实例里，9 个被环境校准门禁判为无效并跳过（不进入成功率分母）：5 个 pvlib 镜像用 NumPy 2.x、历史代码访问已删除的 `np.Inf`；1 个 pyvista 与 3 个 sqlfluff 镜像的 `conda activate` 因 conda 版本与 base Python 不匹配而崩溃。这 9 个实例没有调用模型。
+用 `--pool 20 --repeats 3` 从 dev split 分层抽样 20 个实例，每个有效实例用 `single_no_rag` 重复运行 3 次，批次 `c1f4af0e7bf141b0bb4bb77da165d610`。这是当前最大规模的真实评测。抽中的 20 题里有 9 题未通过当前校准门禁，因此跳过且未调用模型：5 个 pvlib 题在导入时遇到 NumPy 2 移除的 `np.Inf`；pyvista-4315 缺少 `libGL.so.1`；sqlfluff-2419 缺少已安装包元数据；sqlfluff-1517 和 1625 在应用金补丁后目标测试仍分别有 59、63 项失败。后两题需要进一步核查镜像、测试目标和金补丁，不能笼统归因为 conda 崩溃或已证明的环境缺陷。
 
-**有效实例 11 个 × 3 次重复 = 33 次 Agent 运行，成功率 21/33 ≈ 63.6%**。
+**通过当前校准门禁的 11 题 × 3 次 = 33 次 Agent 运行，其中 21 次成功（21/33 ≈ 63.6%）；按题统计为 7/11。** 这是选择后样本与自研 verifier 下的结果，不是 20 题或整个数据集的成功率。
 
 | 实例 | 结果 | 成功率 | 平均 Token | 平均耗时 |
 |---|---|---:|---:|---:|
@@ -131,16 +131,16 @@
 | astroid-1978 | ❌ | 0/3 | 115,087 | 120 秒 |
 | sqlfluff-1763 | ❌ | 0/3 | 173,307 | 134 秒 |
 
-四个失败实例的 verifier 失败点各不相同，均不是环境缺陷（0 个 `error` 字段），如实记录：
+四个失败实例在本项目 verifier 下各有目标测试失败点。行记录的 `error=null` 只表示评测流程没有抛异常，不能证明运行环境完全无问题：sqlfluff-1763 每次都排除了 37 个金补丁上已有的失败节点，最后仍有 1 个非预期失败。
 
 - **pydicom-1139**：`test_valuerep.py::TestPersonName::test_next`。与第四轮同一失败点，旧式 `next(pn)` 协议兼容分支，探针覆盖引导仍不足以在 14 轮内定位。
 - **astroid-1333**：`unittest_modutils.py::test_load_packages_without_init`。模块包加载语义，静态类型推断边界之外的另一类 astroid 深层语义。
 - **astroid-1978**：`unittest_raw_building.py::test_build_module_getattr_catch_output`。模块构建的 `getattr` 捕获行为。
 - **sqlfluff-1763**：`linter_test.py::test_safe_create_replace_file`。文件安全替换（`safe_create_replace_file`），属仓库特有 API 语义。
 
-值得注意的是 4 个失败实例都表现出**高一致性**：同一实例的 3 次重复结果完全一致（0/3 或 3/3），说明失败不是模型随机性波动，而是稳定的能力边界——Agent 会产出补丁（patch 从 382 字节到 3 KB，14 轮迭代 + 15~37 次工具调用），但补丁无法通过 verifier 的目标测试。
+值得注意的是 4 个失败实例都表现出**高一致性**：同一实例的 3 次重复结果完全一致（0/3 或 3/3），说明这 3 次运行的二值结果一致；重复次数少、样本经过校准选择，尚不能排除模型随机性或把失败归结为稳定能力边界——Agent 会产出补丁（patch 从 382 字节到 3 KB，14 轮迭代 + 15~37 次工具调用），但补丁无法通过 verifier 的目标测试。
 
-**本批暴露的评测器环境缺陷（均已修复）**：本轮三次启动才跑通，逐层定位出三个真实 bug 而非环境误报——(1) `_sandbox_profile` 的 `conda activate testbed` 在 sqlfluff/pyvista 镜像崩溃，改为 `export PATH=/opt/miniconda3/envs/testbed/bin:$PATH` 直接指向 testbed 环境；(2) pvlib 等无效环境此前会让整批评测终止，改为跳过无效实例继续跑其余；(3) `_failed_pytest_nodes` 未归一化 pytest 参数化后缀，导致 `fail_to_pass` 的 `[...]` 节点名永远匹配不上，新增 `_normalize_pytest_node` 在比较两侧统一去后缀。
+**本批暴露的评测器环境缺陷（均已修复）**：本轮三次启动才得到完整报告，逐层定位并修改了三个评测器问题——(1) `_sandbox_profile` 的 `conda activate testbed` 在 sqlfluff/pyvista 镜像崩溃，改为 `export PATH=/opt/miniconda3/envs/testbed/bin:$PATH` 直接指向 testbed 环境；(2) pvlib 等无效环境此前会让整批评测终止，改为跳过无效实例继续跑其余；(3) `_failed_pytest_nodes` 未归一化 pytest 参数化后缀，导致 `fail_to_pass` 的 `[...]` 节点名永远匹配不上，新增 `_normalize_pytest_node` 在比较两侧统一去后缀。
 
 ## 合成回归与检索评测
 
@@ -161,9 +161,9 @@
 
 它还不能宣称为生产级自主软件工程系统，也没有证据证明“各方面都优秀”：
 
-- 7 题回归复用了开发题，4/7 不是独立泛化估计；必须冻结策略并使用新的未调参任务验证。
+- 第四轮 7 题回归复用了开发题；第五轮 21/33 来自通过校准的 11/20 题，其中包含既有任务，仍不是独立泛化估计。要冻结策略并使用未调参任务验证。
 - 单个任务 Token 下降 28.8% 不能证明大仓库净收益，也不能把缓存命中统计当作已测得的货币成本节省。
-- 协议探针已实现，但三个失败说明现有策略仍有不足；未完成消融，不能断言失败只能归咎于模型上限。
+- 协议探针已实现，但第五轮 4 个失败题说明现有策略仍有不足；未完成消融，不能断言失败只能归咎于模型上限。
 - 单机 SQLite 队列可演示 API/Worker 分离。Redis 原子性、执行 fencing、背压、鉴权、多机状态存储和真实崩溃演练仍有缺口，详见 [项目复核](project-review.md)。
 - 检查点恢复的是角色消息；多角色阶段、返工计数和工具副作用没有事务检查点，不是无损续跑。
 
@@ -171,8 +171,8 @@
 
 1. `elapsed_seconds` 计量真实评测中的 Agent 执行阶段，不含仓库克隆、前置校准和最终独立 verifier；不可称为用户端到端等待时间。
 2. 这里使用官方实例镜像及数据，但执行的是自研 pytest 文件级 verifier，**不是官方 harness 的完整 resolved 指标**。校准允许金补丁存在不涉及 FAIL_TO_PASS 的已知失败，候选判分会排除这些节点。必须同时检查 `unstable_pass_to_pass`、`excluded_unstable_tests`、`ignored_environment_failures` 和原始 stdout，不能统称“官方测试全部通过”。
-3. 本次检查发现 `c2d99a7198b241aca03183a55e4584c0`、`ae921255c40a49929e80891b168f2b17`、`236ad768ac3342a289a81c8e230f0de5` 只有工作目录，没有 `report.json`。不能据此声称 20 题 × 3 已完成，也不能从空日志判断正在正常推进。现有评测器在全部校准结束前不写报告，这是需要补强的诊断缺口。该缺口在第五轮已通过「校准阶段即写 `partial_invalid_environment` 报告 + 逐行追加 report」改善，`c1f4af0e7bf141b0bb4bb77da165d610` 有完整 `report.json`。
-4. 最大完整单批仍为 `64475892baa647a7878ed43a81eed865`：7 条记录、4 条 success。可分享的逐题指标见 [回归数据](experiments/real_regression_2026-10-03.csv)，全部原始追踪仍在本机运行目录。
+3. 早期尝试曾只留下工作目录，没有 `report.json`；第五轮评测器改为在校准阶段写 `partial_invalid_environment` 报告并逐行更新。`c1f4af0e7bf141b0bb4bb77da165d610` 现有完整 `report.json`，不能再把早期目录的缺报告状况当作当前实验状态。
+4. 最大完整单批为 `c1f4af0e7bf141b0bb4bb77da165d610`：20 项审计，11 个题进入模型阶段，33 条记录、21 条 success。可分享的逐次指标见 [第五轮 CSV](experiments/real_expansion_2026-10-03.csv)；第四轮数据仍见 [7 题回归 CSV](experiments/real_regression_2026-10-03.csv)。补丁和追踪位于本机运行目录。
 5. WorkBuddy 的补丁字节传输、clone 超时和换行配置改动保留。本次不会把“有代码”“离线测试通过”“真实模型评测完成”混作一个验收级别。
 
 ## 复现命令
