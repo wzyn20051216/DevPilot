@@ -32,7 +32,7 @@ from .services.task_execution_service import (
     TaskExecutionService,
 )
 from .services.task_queue import get_task_queue
-from .services.task_policy import task_rag_enabled
+from .services.task_policy import decide_task_strategy, task_rag_enabled
 
 
 def _worker_runner_factory(task, cancel_check: Callable[[], bool]):
@@ -48,6 +48,7 @@ def _worker_runner_factory(task, cancel_check: Callable[[], bool]):
             repo_path=task.repo_path,
             enable_rag=enable_rag,
             cancel_check=cancel_check,
+            strategy=decide_task_strategy(task),
         )
     return DevPilotOrchestrator(
         repo_path=task.repo_path,

@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter, sleep
@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from ..agents.orchestrator import DevPilotOrchestrator
 from ..agents.single_developer_agent import SingleDeveloperAgent
+from ..agents.strategy import AgentStrategy, decide_strategy
 from ..config import settings
 from ..sandbox.docker_runner import SandboxProfile, use_sandbox_profile
 from ..tools.test_tool import run_tests
@@ -77,7 +78,7 @@ DATASETS: dict[str, tuple[str, str]] = {
 # 当前 verifier 与 Agent 的 run_test 都只支持 pytest，抽样时可用 --pytest-only 排除。
 NON_PYTEST_REPOS = frozenset({"django/django", "sympy/sympy"})
 # 真实评测额外支持增强策略变体；合成 runner 的 VARIANTS 保持不变。
-REAL_VARIANTS: tuple[str, ...] = (*VARIANTS, "single_enhanced")
+REAL_VARIANTS: tuple[str, ...] = (*VARIANTS, "single_enhanced", "single_adaptive")
 REAL_EVAL_ROOT = PROJECT_ROOT / "data" / "real_world_evals"
 DATASET_CACHE_ROOT = PROJECT_ROOT / "data" / "swebench_datasets"
 REPOSITORY_CACHE_ROOT = PROJECT_ROOT / "data" / "repository_cache"
@@ -624,7 +625,12 @@ def audit_real_instance(instance: SweBenchInstance, run_id: str) -> dict[str, An
     }
 
 
-def _run_agent(instance: SweBenchInstance, variant: str, workspace: Path):
+def _run_agent(
+    instance: SweBenchInstance,
+    variant: str,
+    workspace: Path,
+    strategy: AgentStrategy | None = None,
+):
     enable_rag = variant in {"single_rag", "multi_rag"}
     enhanced = variant == "single_enhanced"
     with use_sandbox_profile(_sandbox_profile(instance)), use_write_guard(
@@ -633,7 +639,10 @@ def _run_agent(instance: SweBenchInstance, variant: str, workspace: Path):
         if variant.startswith("single_"):
             return list(
                 SingleDeveloperAgent(
-                    str(workspace), enable_rag=enable_rag, enhanced=enhanced
+                    str(workspace),
+                    enable_rag=enable_rag,
+                    enhanced=enhanced,
+                    strategy=strategy,
                 ).run_stream(instance.problem_statement)
             )
         return list(
@@ -669,11 +678,16 @@ def evaluate_real_instance(
 
     suffix = _repeat_suffix(variant, repeat_index)
     workspace = create_real_workspace(instance, run_id, suffix)
+    strategy = (
+        decide_strategy(workspace, instance.problem_statement)
+        if variant == "single_adaptive"
+        else None
+    )
     started = perf_counter()
     events = []
     execution_exception: str | None = None
     try:
-        events = _run_agent(instance, variant, workspace)
+        events = _run_agent(instance, variant, workspace, strategy=strategy)
     except Exception as exc:  # noqa: BLE001
         execution_exception = f"{type(exc).__name__}: {exc}"
     elapsed = perf_counter() - started
@@ -740,6 +754,7 @@ def evaluate_real_instance(
             + instance.instance_id.rsplit("-", 1)[-1]
         ),
         "variant": variant,
+        "strategy": asdict(strategy) if strategy is not None else None,
         "repeat_index": repeat_index,
         "success": bool(verification["passed"]) and not event_errors,
         "tests_passed": bool(verification["passed"]),

@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from loguru import logger
 
 from ..agents.single_developer_agent import SingleDeveloperAgent
+from ..agents.strategy import AgentStrategy
 from ..config import settings
 from ..database.task_repository import TaskRepository
 from ..models.agent_state import AgentEvent, PlanStep
@@ -29,11 +30,13 @@ class SingleAgentTaskRunner:
         repo_path: str,
         enable_rag: bool,
         cancel_check: Callable[[], bool],
+        strategy: AgentStrategy | None = None,
     ) -> None:
         self.agent = SingleDeveloperAgent(
             repo_path=repo_path,
             enable_rag=enable_rag,
             cancel_check=cancel_check,
+            strategy=strategy,
         )
 
     def execute_stream(

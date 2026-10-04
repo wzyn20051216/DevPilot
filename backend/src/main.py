@@ -18,7 +18,7 @@ from .exceptions import DevPilotError, InvalidTaskStateError
 from .llm_client import chat_once
 from .logging_config import configure_logging
 from .config import settings
-from .services.task_policy import task_rag_enabled
+from .services.task_policy import decide_task_strategy, task_rag_enabled
 from .schemas import (
     AgentRunRequest,
     ChatRequest,
@@ -62,6 +62,7 @@ def _create_task_runner(task, cancel_check):
             repo_path=task.repo_path,
             enable_rag=enable_rag,
             cancel_check=cancel_check,
+            strategy=decide_task_strategy(task),
         )
     return DevPilotOrchestrator(
         repo_path=task.repo_path,

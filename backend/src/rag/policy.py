@@ -95,13 +95,17 @@ class RagDecision:
     metrics: dict[str, object]
 
 
-def count_source_files(repo_path: str | Path) -> int:
+def count_source_files(
+    repo_path: str | Path,
+    extensions: set[str] | frozenset[str] | None = None,
+) -> int:
     """! @brief 统计仓库内会被索引的源码文件数。
 
     用 os.walk 自上而下遍历，并在进入噪声目录前剪枝（dirs[:] 原地过滤），
     避免对 node_modules / .venv 等大目录做无意义的递归展开。
 
     @param repo_path 代码仓库根目录。
+    @param extensions 可选的扩展名白名单；默认统计全部受支持源码。
     @return 源码文件数；路径不存在时返回 0；命中遍历上限时按上限返回。
     """
 
@@ -109,13 +113,14 @@ def count_source_files(repo_path: str | Path) -> int:
     if not repo.is_dir():
         return 0
 
+    selected_extensions = SOURCE_EXTENSIONS if extensions is None else extensions
     count = 0
     for _root, dirs, files in os.walk(repo):
         # topdown 剪枝：把忽略目录从待遍历列表中原地移除，os.walk 就不会再深入。
         dirs[:] = [name for name in dirs if name not in IGNORED_DIRS]
 
         for name in files:
-            if Path(name).suffix.lower() not in SOURCE_EXTENSIONS:
+            if Path(name).suffix.lower() not in selected_extensions:
                 continue
             count += 1
             # 防性能坑：巨型仓库不追求精确计数，达到上限即返回。

@@ -82,6 +82,28 @@ class Settings(BaseSettings):
         description="查询歧义度判定参考阈值：问题描述短于该值且缺少定位信号时视为歧义查询",
     )
 
+    # --- 动态 Agent 策略路由 ---
+    strategy_router_enabled: bool = Field(
+        default=True,
+        description="是否按仓库结构与问题语义动态选择 Agent 工作流",
+    )
+    strategy_outline_min_lines: int = Field(
+        default=800,
+        ge=1,
+        description="明确目标 Python 文件达到该行数时启用 code_outline",
+    )
+    strategy_outline_min_repo_files: int = Field(
+        default=400,
+        ge=1,
+        description="无明确文件引用时，仓库达到该源码文件数才启用 code_outline",
+    )
+    strategy_python_min_ratio: float = Field(
+        default=0.5,
+        gt=0,
+        le=1,
+        description="Python 文件占源码文件的最小比例，低于该值不启用 code_outline",
+    )
+
     # --- Agent 上下文断点恢复（技术手册 10.1）---
     agent_checkpoint_enabled: bool = Field(
         default=True,
