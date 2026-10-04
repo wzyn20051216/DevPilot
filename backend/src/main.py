@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from typing import cast
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
@@ -18,6 +18,7 @@ from .exceptions import DevPilotError, InvalidTaskStateError
 from .llm_client import chat_once
 from .logging_config import configure_logging
 from .config import settings
+from .security import require_api_key, require_repo_path
 from .services.task_policy import decide_task_strategy, task_rag_enabled
 from .schemas import (
     AgentRunRequest,
@@ -56,6 +57,7 @@ from .tools.git_tool import git_diff
 def _create_task_runner(task, cancel_check):
     """! @brief 按任务持久化的执行策略构造实际运行器。"""
 
+    require_repo_path(task.repo_path)
     enable_rag = task_rag_enabled(task)
     if task.execution_mode.startswith("single_"):
         return SingleAgentTaskRunner(
@@ -84,6 +86,9 @@ async def lifespan(_app: FastAPI):
     """! @brief 统一管理应用启动和关闭生命周期。"""
 
     configure_logging()
+    settings.validate_security()
+    if not settings.api_key_list:
+        logger.warning("API Key 鉴权未启用，仅适用于可信本地环境")
     init_database()
     # 队列任务由独立 Worker 持有，API 重启不能更改其执行状态。
     interrupted = (
@@ -108,6 +113,7 @@ app = FastAPI(
     description="Multi-Agent Software Engineering Platform",
     version="1.0.0",
     lifespan=lifespan,
+    dependencies=[Depends(require_api_key)],
 )
 
 # Vite 开发服务器和 FastAPI 使用不同端口，浏览器会把它们视为跨域请求。
@@ -211,6 +217,13 @@ def _extract_pr_url(
 async def health_check():
     """健康检查接口：确认服务在跑、能响应。"""
     return {"status": "ok", "service": "DevPilot"}
+
+
+@app.get("/api/auth/check")
+def check_auth() -> dict[str, str]:
+    """! @brief 供前端验证凭据，不触发模型或仓库操作。"""
+
+    return {"status": "ok"}
 
 
 def _is_docker_available() -> bool:
@@ -421,6 +434,7 @@ def _enqueue_task_for_worker(task_id: str, task) -> StreamingResponse:
     from .services.task_queue import get_task_queue
 
     queue = get_task_queue()
+    require_repo_path(task.repo_path)
     idempotency_key = f"{task_id}:{task.status}"
     if not queue.enqueue(task_id, idempotency_key=idempotency_key):
         entry = queue.get(task_id)
@@ -454,6 +468,7 @@ def execute_task(task_id: str) -> StreamingResponse:
             raise InvalidTaskStateError(f"当前任务状态无法执行：{task.status}")
         return _enqueue_task_for_worker(task_id, task)
 
+    require_repo_path(task.repo_path)
     task_execution_service.start_inline(task_id, "awaiting_approval")
 
     return _task_event_stream(task_id, after_sequence=0)
@@ -492,7 +507,8 @@ def _task_event_stream(task_id: str, after_sequence: int) -> StreamingResponse:
 def reconnect_task_events(task_id: str, after_sequence: int = 0) -> StreamingResponse:
     """! @brief 断线后从指定事件序号恢复 SSE。"""
 
-    _ = task_repository.get_task(task_id)
+    task = task_repository.get_task(task_id)
+    require_repo_path(task.repo_path)
     return _task_event_stream(task_id, after_sequence=max(0, after_sequence))
 
 
@@ -531,6 +547,7 @@ def resume_task(task_id: str) -> StreamingResponse:
     """
 
     _ = task_repository.get_task(task_id)
+    require_repo_path(task_repository.get_task(task_id).repo_path)
     if settings.task_queue_backend != "inline":
         # 队列模式：恢复执行交给 Worker（其 claim_status 接受 interrupted），
         # 上下文检查点注入同样由 Worker 进程的执行服务统一处理。
@@ -605,6 +622,7 @@ def get_task_diff(task_id: str) -> dict[str, str]:
             detail=str(exc),
         ) from exc
 
+    require_repo_path(task.repo_path)
     try:
         result = git_diff(repo_path=task.repo_path)
     except Exception as exc:
@@ -774,6 +792,7 @@ def create_publish_preview(task_id:str,request:PublishPreviewRequest)->PublishPr
             detail="GitHub Issue 来源信息不完整，无法生成发布预览",
         )
 
+    require_repo_path(task.repo_path)
     diff_result=git_diff(repo_path=task.repo_path)
     draft = PullRequestAgent().generate(
         issue_title=issue_title,
@@ -838,6 +857,8 @@ def publish_task(
             status_code=404,
             detail=str(exc),
         ) from exc
+
+    require_repo_path(task.repo_path)
 
     try:
         preview = publish_repository.get_preview(

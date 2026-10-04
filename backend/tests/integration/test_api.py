@@ -137,3 +137,83 @@ def test_inline_backpressure_keeps_status_and_returns_retry_after(tmp_path, monk
             assert response.status_code == 429
             assert int(response.headers["Retry-After"]) > 0
             assert task_repository.get_task(task.id).status == status
+
+
+def test_api_key_authentication_health_exemptions_and_cors(tmp_path, monkeypatch):
+    """! @brief API Key 覆盖读写/SSE；探针与 CORS 预检保持可达。"""
+    from pydantic import SecretStr
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(main.settings, "api_keys", SecretStr("first-key, second-key"))
+    with TestClient(app) as client:
+        for url, method in [("/api/evals/summary", "get"),
+                            ("/api/tasks/missing/execute", "post"),
+                            ("/api/tasks/missing/events", "get")]:
+            response = getattr(client, method)(url)
+            assert response.status_code == 401
+            assert response.headers["WWW-Authenticate"] == "Bearer"
+            assert response.json()["error"]["code"] == "unauthenticated"
+        for headers in [{"Authorization": "Bearer first-key"},
+                        {"X-API-Key": "second-key"},
+                        {"Authorization": "bearer second-key"}]:
+            assert client.get("/api/auth/check", headers=headers).status_code == 200
+        for headers in [{"Authorization": "Basic first-key"},
+                        {"Authorization": "Bearer invalid"},
+                        {"X-API-Key": "invalid"}]:
+            assert client.get("/api/auth/check", headers=headers).status_code == 401
+        assert client.get("/healthz").status_code == 200
+        assert client.get("/readyz").status_code == 200
+        preflight = client.options("/api/tasks/plan", headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Authorization",
+        })
+        assert preflight.status_code == 200
+
+
+def test_repo_whitelist_rejects_traversal_and_all_request_models(tmp_path, monkeypatch):
+    """! @brief 所有仓库入口均先授权；规范化路径避免目录前缀误匹配。"""
+    import pytest
+    from pydantic import ValidationError
+    from backend.src.schemas import AgentRunRequest, GitHubIssueImportRequest, RepositoryAnalysisRequest
+    allowed = tmp_path / "repos"
+    allowed.mkdir()
+    monkeypatch.setattr(main.settings, "allowed_repo_roots", str(allowed))
+    assert AgentRunRequest(repo_path=str(allowed / "project"), question="fix").repo_path == str(allowed / "project")
+    for path in [allowed / ".." / "secret", tmp_path / "repos-other"]:
+        with pytest.raises(ValidationError):
+            AgentRunRequest(repo_path=str(path), question="fix")
+        with pytest.raises(ValidationError):
+            RepositoryAnalysisRequest(repo_path=str(path))
+        with pytest.raises(ValidationError):
+            GitHubIssueImportRequest(owner="o", repo="r", issue_number=1, local_repo_path=str(path))
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "whitelist.db")
+    with TestClient(app) as client:
+        assert client.post("/api/tasks/plan", json={"repo_path": str(tmp_path), "question": "fix"}).status_code == 422
+        old = task_repository.create_task(repo_path=str(tmp_path), question="old", plan=[])
+        assert client.post(f"/api/tasks/{old.id}/execute").status_code == 403
+        assert task_repository.get_task(old.id).status == "awaiting_approval"
+        task_repository.claim_status(old.id, {"awaiting_approval"}, "interrupted")
+        assert client.post(f"/api/tasks/{old.id}/resume").status_code == 403
+        assert task_repository.get_task(old.id).status == "interrupted"
+        assert client.get(f"/api/tasks/{old.id}/diff").status_code == 403
+
+
+def test_repo_whitelist_resolves_symlink_escape(tmp_path, monkeypatch):
+    """! @brief 授权目录内的符号链接不能把访问导向目录外。"""
+    import pytest
+    from backend.src.security import validate_repo_path
+    allowed, outside = tmp_path / "allowed", tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    link = allowed / "link"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        # Windows 非开发模式无符号链接权限时使用目录 junction。
+        import subprocess
+        result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True)
+        if result.returncode:
+            pytest.skip("当前系统无法创建符号链接或 junction")
+    monkeypatch.setattr(main.settings, "allowed_repo_roots", str(allowed))
+    with pytest.raises(ValueError, match="授权范围"):
+        validate_repo_path(str(link / "file.py"))

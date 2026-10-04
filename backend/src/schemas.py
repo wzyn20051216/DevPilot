@@ -1,6 +1,10 @@
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+from .security import validate_repo_path
+
+AuthorizedRepoPath = Annotated[str, AfterValidator(validate_repo_path)]
 
 from .models.agent_state import ToolCallRecord
 from .models.agent_state import PlanStep
@@ -25,7 +29,7 @@ class ChatResponse(BaseModel):
 class RepositoryAnalysisRequest(BaseModel):
     """请求数据模型，用于分析代码仓库。"""
 
-    repo_path: str = Field(..., min_length=1, description="仓库路径")
+    repo_path: AuthorizedRepoPath = Field(..., min_length=1, description="仓库路径")
     question: str = Field(default="分析这个项目的整体架构", min_length=1, description="用户问题")
 
 class RepositoryAnalysisResponse(BaseModel):
@@ -39,7 +43,7 @@ class RepositoryAnalysisResponse(BaseModel):
 class AgentRunRequest(BaseModel):
     """请求数据模型，用于运行代码分析 Agent。"""
 
-    repo_path: str = Field(..., min_length=1, description="仓库路径")
+    repo_path: AuthorizedRepoPath = Field(..., min_length=1, description="仓库路径")
     question: str = Field(..., min_length=1, description="用户问题")
     execution_mode: ExecutionMode = Field(
         default="single_no_rag",
@@ -106,7 +110,7 @@ class GitHubIssueImportRequest(
         description="Issue 编号",
     )
 
-    local_repo_path: str = Field(
+    local_repo_path: AuthorizedRepoPath = Field(
         ...,
         min_length=1,
         description="本地代码仓库路径，DevPilot 会在该仓库上执行分析和修改",

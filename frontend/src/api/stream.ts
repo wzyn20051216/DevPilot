@@ -1,5 +1,6 @@
 import type { AgentEvent } from '../types/agent'
 import { API_BASE_URL } from './client'
+import { authHeaders, requestAuthentication } from './auth'
 
 /** @brief 将一个完整 SSE block 转成事件，忽略注释和空 data。 */
 export function parseEventBlock(block: string): AgentEvent | null {
@@ -61,11 +62,15 @@ async function consumeTaskStream(
 ): Promise<void> {
   const response = await fetch(url, {
     method,
-    headers: { Accept: 'text/event-stream' },
+    headers: { Accept: 'text/event-stream', ...authHeaders() },
     signal,
   })
 
   if (!response.ok) {
+    if (response.status === 401) {
+      requestAuthentication()
+      throw new Error('请配置有效的 API Key 后重试')
+    }
     throw new Error(`HTTP ${response.status}: ${await response.text()}`)
   }
   if (!response.body) {

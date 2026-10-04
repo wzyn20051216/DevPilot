@@ -27,6 +27,7 @@ from .config import settings
 from .database.connection import init_database
 from .database.task_repository import task_repository
 from .logging_config import configure_logging
+from .security import require_repo_path
 from .services.task_execution_service import (
     SingleAgentTaskRunner,
     TaskExecutionService,
@@ -42,6 +43,7 @@ def _worker_runner_factory(task, cancel_check: Callable[[], bool]):
     应用并注册大量路由，而 Worker 只需要执行能力，引入它会无谓拖慢启动
     并引入 HTTP 相关副作用。通过共享 task_rag_enabled 保持两种入口策略一致。
     """
+    require_repo_path(task.repo_path)
     enable_rag = task_rag_enabled(task)
     if task.execution_mode.startswith("single_"):
         return SingleAgentTaskRunner(

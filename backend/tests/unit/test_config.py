@@ -35,3 +35,14 @@ def test_external_service_limits_are_validated() -> None:
         Settings(_env_file=None, llm_max_retries=11)
     with pytest.raises(ValueError):
         Settings(_env_file=None, mcp_timeout_seconds=-1)
+
+
+def test_production_requires_nonempty_api_keys():
+    """! @brief 生产环境拒绝空白 Key；SecretStr 不暴露配置密钥。"""
+    config = Settings(_env_file=None, app_env="production", api_keys=" , ")
+    with pytest.raises(RuntimeError, match="API_KEYS"):
+        config.validate_security()
+    config = Settings(_env_file=None, app_env="production", api_keys="secret-a, secret-b")
+    config.validate_security()
+    assert config.api_key_list == ["secret-a", "secret-b"]
+    assert "secret-a" not in repr(config)
