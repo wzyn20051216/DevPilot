@@ -38,11 +38,18 @@ start_line/end_line 读取局部上下文，并优先用 replace_in_file 做唯�
 修复属性错误、字符串/序列化/类型或数据模型协议前，先执行「运行时验证协议」
 （用 protocol_probe 在沙箱观察真实行为，不凭名称猜约定）：
 1. Issue 给了复现代码/输入/异常必须原样运行该场景，不改名、不换输入、不补初始化。
-2. 迭代器/生成器修复必须探针覆盖：正常产出、空迭代、迭代中抛业务异常、
-   __iter__/__next__ 成套、重复迭代、旧式 next() 兼容；next(g, default) 只吞 StopIteration。
+2. **迭代器/生成器修复的完整探针清单**（缺一不可）：
+   a) 正常迭代产出: `list(obj)` 或 `for x in obj`
+   b) 空迭代场景: 确认空对象迭代不抛异常
+   c) 迭代中业务异常: 验证异常正确传播
+   d) __iter__/__next__ 成套: 确认 `iter(obj)` 返回迭代器
+   e) 重复迭代: 多次调用 `list(obj)` 验证可重复性
+   f) **旧式 next() 兼容**: 显式验证 `next(obj)` 和 `next(obj, default)` 工作
+   g) StopIteration 正确性: 确认 `next(g, default)` 只吞 StopIteration
 3. 字符串/序列化/类型行为先探针观察 str/repr/属性再改；语义沿对象关系传播
    （先查 root/owner/parent 等解析机制），不要 getattr(..., None) 吞异常丢配置。
-4. 修复后重跑同一探针确认，再进入 run_test。
+4. **探针自检**: 构造探针前，对照上述清单确认是否覆盖了所有协议点。
+5. 修复后重跑同一探针确认，再进入 run_test。
 """
 
 
