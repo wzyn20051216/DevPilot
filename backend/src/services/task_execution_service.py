@@ -79,8 +79,17 @@ class TaskExecutionService:
         self._cancel_events: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
 
-    def start(self, task_id: str) -> None:
-        """! @brief 启动已原子迁移到 running 的任务。"""
+    def start(
+        self,
+        task_id: str,
+        fence_check: Callable[[], bool] | None = None,
+    ) -> None:
+        """! @brief 启动已原子迁移到 running 的任务。
+
+        @param fence_check 可选的租约校验回调：返回 False 表示本次领取已失效。
+        队列模式下由 Worker 传入（对照队列里的 fencing 令牌），inline 模式不传，
+        表示当前进程就是唯一执行者。
+        """
 
         with self._lock:
             current = self._threads.get(task_id)
@@ -89,7 +98,7 @@ class TaskExecutionService:
             cancel_event = threading.Event()
             thread = threading.Thread(
                 target=self._run,
-                args=(task_id, cancel_event),
+                args=(task_id, cancel_event, fence_check),
                 name=f"devpilot-task-{task_id[:8]}",
                 daemon=True,
             )
@@ -138,15 +147,21 @@ class TaskExecutionService:
     def _make_checkpoint_callback(
         self,
         task_id: str,
+        fence_check: Callable[[], bool] | None = None,
     ) -> Callable[[str, list[dict[str, Any]]], None]:
         """! @brief 构造检查点写入回调；写失败绝不影响任务执行。
 
         检查点持久化是尽力而为的旁路逻辑：Agent 每轮迭代都会回调一次，若
         数据库写入失败绝不能打断 tool-calling 主循环或任务收尾，因此这里把
         所有异常降级为 debug 日志。
+
+        失去租约后不再写检查点：否则旧执行者会把过期上下文覆盖到新持有者
+        已经推进的检查点上。
         """
 
         def callback(agent_name: str, messages: list[dict[str, Any]]) -> None:
+            if fence_check is not None and not fence_check():
+                return
             try:
                 context_store.save_context(
                     task_id,
@@ -184,17 +199,51 @@ class TaskExecutionService:
                 agents.append(agent)
         return agents
 
-    def _run(self, task_id: str, cancel_event: threading.Event) -> None:
-        """! @brief 完整消费编排器事件，任务结果不依赖任何客户端连接。"""
+    @staticmethod
+    def _fence_holder(fence_check: Callable[[], bool] | None) -> Callable[[], bool]:
+        """! @brief 把可选的租约校验统一成可直接调用的谓词。
+
+        未传入校验回调（inline 模式）时恒为 True：那种模式下当前进程就是
+        唯一执行者，没有"别人接管"的可能。
+        """
+
+        if fence_check is None:
+            return lambda: True
+        return fence_check
+
+    def _run(
+        self,
+        task_id: str,
+        cancel_event: threading.Event,
+        fence_check: Callable[[], bool] | None = None,
+    ) -> None:
+        """! @brief 完整消费编排器事件，任务结果不依赖任何客户端连接。
+
+        每个事件落盘前都会校验租约（fencing）：一旦本执行者不再是任务的
+        合法持有者，立刻停止写入并触发取消，避免旧执行者覆盖新持有者的
+        事件流、检查点和最终状态。
+
+        注意边界：已经发出的工具调用（例如正在跑的测试或写文件）无法被
+        抢占，工作区副作用可能在 fencing 生效前最后一次落下。这里保证的是
+        "旧执行者不再写入数据库"，不是副作用恰好执行一次。
+        """
 
         sequence = self.repository.next_event_sequence(task_id)
         saw_error = False
+        fence_lost = False
         last_event_type: str | None = None
+        holds_fence = self._fence_holder(fence_check)
+
+        def cancel_requested() -> bool:
+            """! @brief 传给 Agent 的取消谓词：用户取消或失去租约都停。"""
+
+            return cancel_event.is_set() or not holds_fence()
+
         try:
             task = self.repository.get_task(task_id)
             orchestrator = self.orchestrator_factory(
                 task,
-                cancel_event.is_set,
+                cancel_requested,
             )
             # ---- 上下文断点恢复（技术手册 10.1）----
             # 单 Agent 与多 Agent 统一处理：从编排器上收集所有暴露了
@@ -230,12 +279,22 @@ class TaskExecutionService:
                         sequence += 1
                     # 无论是否命中检查点都要挂上写回调，让本次运行的中间状态
                     # 持续落盘，供下一次重启后继续恢复。
-                    agent.checkpoint_callback = self._make_checkpoint_callback(task_id)
+                    agent.checkpoint_callback = self._make_checkpoint_callback(
+                        task_id,
+                        fence_check,
+                    )
 
             for event in orchestrator.execute_stream(
                 question=task.question,
                 plan=task.plan,
             ):
+                if not holds_fence():
+                    fence_lost = True
+                    cancel_event.set()
+                    logger.warning(
+                        "任务 {} 已失去租约，停止写入事件与状态", task_id
+                    )
+                    break
                 self._persist_event(task_id, sequence, event)
                 sequence += 1
                 last_event_type = event.type
@@ -243,6 +302,11 @@ class TaskExecutionService:
                     saw_error = True
                 if event.type == "cancelled" or cancel_event.is_set():
                     break
+
+            if fence_lost:
+                # 队列侧已把任务隔离为 dead 并把 tasks 标为 interrupted（或
+                # 由新持有者接管），旧执行者绝不能再去改最终状态。
+                return
 
             if cancel_event.is_set():
                 cancelled_event = AgentEvent(

@@ -137,6 +137,59 @@ def test_running_task_can_be_cancelled(
     ) == 1
 
 
+def test_lost_lease_stops_writes_and_leaves_state_alone(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """失去租约的执行者必须停止写入，且不得覆盖最终状态。
+
+    复现真实场景：Worker A 领取任务后租约过期、被队列隔离，随后 Worker B
+    接管。此时 A 的后续事件和收口都不应落盘——否则会把 B 的进度覆盖掉。
+    """
+
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "tasks.db")
+    connection.init_database()
+    repository = TaskRepository()
+    task = _create_task(repository)
+    assert repository.claim_status(task.id, {"awaiting_approval"}, "running")
+
+    # 第一个事件写入后才失去租约，用来验证"失去之后不再写"。
+    fence = {"held": True, "checks": 0}
+    # 记录编排器被消费到哪一步：fencing 生效时循环会提前 break，
+    # 生成器不会再被推进，因此这里停在第一个 yield 之后。
+    produced: list[str] = []
+
+    class SlowOrchestrator:
+        def execute_stream(self, question: str, plan: list) -> Iterator[AgentEvent]:
+            produced.append("start")
+            yield AgentEvent(type="start", agent="coder", message="start")
+            # 交出控制权后租约失效：下一次事件写入前应被拦下。
+            fence["held"] = False
+            produced.append("final")
+            yield AgentEvent(type="final", agent="orchestrator", message="done")
+
+    def fence_check() -> bool:
+        fence["checks"] += 1
+        return bool(fence["held"])
+
+    service = TaskExecutionService(
+        repository,
+        lambda repo_path, cancel_check: SlowOrchestrator(),
+    )
+    service.start(task.id, fence_check)
+
+    # 等执行线程结束（fencing 触发后应当很快退出）。
+    deadline = time.monotonic() + 2
+    while service.is_running(task.id) and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    # 只有失去租约前的事件被持久化；final 从未落盘。
+    assert [event["type"] for event in repository.get_events(task.id)] == ["start"]
+    assert fence["checks"] > 0
+    # 旧执行者没有改最终状态，任务仍留给新持有者处理。
+    assert repository.get_task(task.id).status == "running"
+
+
 def test_startup_marks_orphaned_execution_interrupted(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

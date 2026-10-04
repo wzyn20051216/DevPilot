@@ -57,6 +57,29 @@ def _worker_runner_factory(task, cancel_check: Callable[[], bool]):
     )
 
 
+def make_fence_check(queue, task_id: str, worker_id: str, fence_token: int):
+    """! @brief 构造带短缓存的租约校验回调，供执行服务在写盘前调用。
+
+    执行服务每个事件都会问一次"我还持有这个任务吗"，直接查库会让写事件
+    的开销翻倍。缓存 1 秒的判定结果：失去租约的执行者最多多写 1 秒的
+    事件，但正常情况下数据库压力可忽略。
+
+    @return 无参谓词，True 表示仍持有租约。
+    """
+
+    state = {"checked_at": 0.0, "held": True}
+
+    def check() -> bool:
+        now = time.monotonic()
+        if now - state["checked_at"] < 1.0:
+            return bool(state["held"])
+        state["held"] = queue.is_current(task_id, worker_id, fence_token)
+        state["checked_at"] = now
+        return bool(state["held"])
+
+    return check
+
+
 def run_worker_once(
     queue,
     service: TaskExecutionService,
@@ -80,29 +103,40 @@ def run_worker_once(
         {"awaiting_approval", "interrupted"} | ({"failed"} if entry.attempts > 1 else set()),
         "running",
     ):
-        queue.complete(task_id, succeeded=False, error="任务状态不允许执行", worker_id=worker_id)
+        queue.complete(
+            task_id,
+            succeeded=False,
+            error="任务状态不允许执行",
+            worker_id=worker_id,
+            fence_token=entry.fence_token,
+        )
         return True
 
-    service.start(task_id)
+    service.start(task_id, make_fence_check(queue, task_id, worker_id, entry.fence_token))
     poll = settings.task_worker_poll_seconds / 4
     next_heartbeat = 0.0
     while service.is_running(task_id):
         if service.repository.get_task(task_id).status == "cancelling":
             service.cancel(task_id)
         if time.monotonic() >= next_heartbeat:
-            if not queue.heartbeat(worker_id, task_id):
+            if not queue.heartbeat(worker_id, task_id, entry.fence_token):
                 service.cancel(task_id)
             next_heartbeat = time.monotonic() + settings.task_worker_heartbeat_seconds
         time.sleep(poll)
     status = service.repository.get_task(task_id).status
-    queue.complete(task_id, succeeded=status == "completed", worker_id=worker_id)
+    queue.complete(
+        task_id,
+        succeeded=status == "completed",
+        worker_id=worker_id,
+        fence_token=entry.fence_token,
+    )
     return True
 
 
 def _settle_running(
     queue,
     service: TaskExecutionService,
-    inflight: set[str],
+    inflight: dict[str, int],
     lock: threading.Lock,
     worker_id: str,
 ) -> None:
@@ -110,10 +144,13 @@ def _settle_running(
 
     主循环每次迭代先结算上一轮结束的任务，避免任务在 claim 与 complete
     之间长时间停留在 claimed 状态；租约虽能兜底，但及时收口让队列统计更准。
+
+    ``inflight`` 的值是该任务本次领取的 fencing 令牌，结算时一并带回，
+    保证被回收过（令牌已失效）的任务不会被旧 Worker 覆盖成 done。
     """
     with lock:
-        task_ids = list(inflight)
-    for task_id in task_ids:
+        entries = list(inflight.items())
+    for task_id, fence_token in entries:
         if service.is_running(task_id):
             # 协作式取消轮询：API 进程只把任务标记为 cancelling（跨进程
             # 无法直接调用本进程的 service.cancel），Worker 在这里发现
@@ -126,12 +163,17 @@ def _settle_running(
             continue
         try:
             status = service.repository.get_task(task_id).status
-            queue.complete(task_id, succeeded=status == "completed", worker_id=worker_id)
+            queue.complete(
+                task_id,
+                succeeded=status == "completed",
+                worker_id=worker_id,
+                fence_token=fence_token,
+            )
         except Exception:  # noqa: BLE001
             logger.exception("结算任务 {} 状态失败", task_id)
         finally:
             with lock:
-                inflight.discard(task_id)
+                inflight.pop(task_id, None)
 
 
 def main() -> None:
@@ -176,16 +218,17 @@ def main() -> None:
     stop_event = threading.Event()
     heartbeat_stop = threading.Event()
     lock = threading.Lock()
-    inflight: set[str] = set()
+    # 在飞任务 → 本次领取的 fencing 令牌。
+    inflight: dict[str, int] = {}
 
     def heartbeat_loop() -> None:
         """! @brief 周期性对在飞任务续租，防止长任务被误判为崩溃。"""
         while not heartbeat_stop.wait(settings.task_worker_heartbeat_seconds):
             with lock:
-                task_ids = list(inflight)
-            for task_id in task_ids:
+                entries = list(inflight.items())
+            for task_id, fence_token in entries:
                 try:
-                    if not queue.heartbeat(worker_id, task_id):
+                    if not queue.heartbeat(worker_id, task_id, fence_token):
                         service.cancel(task_id)
                 except Exception:  # noqa: BLE001
                     logger.exception("任务 {} 心跳失败", task_id)
@@ -214,6 +257,12 @@ def main() -> None:
         try:
             queue.reclaim_expired()
             _settle_running(queue, service, inflight, lock, worker_id)
+            # 消费侧背压：在飞任务达到上限时不再领取新任务，让积压留在队列里
+            # （入队侧的深度上限负责拒绝更多新任务），而不是把本进程压垮。
+            with lock:
+                at_capacity = len(inflight) >= settings.task_worker_max_concurrency
+            if at_capacity:
+                continue
             entry = queue.claim(worker_id)
             if entry is None:
                 continue
@@ -223,11 +272,20 @@ def main() -> None:
                 {"awaiting_approval", "interrupted"} | ({"failed"} if entry.attempts > 1 else set()),
                 "running",
             ):
-                queue.complete(task_id, succeeded=False, error="任务状态不允许执行", worker_id=worker_id)
+                queue.complete(
+                    task_id,
+                    succeeded=False,
+                    error="任务状态不允许执行",
+                    worker_id=worker_id,
+                    fence_token=entry.fence_token,
+                )
                 continue
             with lock:
-                inflight.add(task_id)
-            service.start(task_id)
+                inflight[task_id] = entry.fence_token
+            service.start(
+                task_id,
+                make_fence_check(queue, task_id, worker_id, entry.fence_token),
+            )
         except Exception:  # noqa: BLE001
             # 单次 claim/execute 失败不能杀死主循环：记录后继续下一轮。
             logger.exception("Worker 主循环异常，继续下一轮")
