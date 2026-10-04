@@ -24,3 +24,15 @@ def test_non_failure_lines_do_not_become_failures() -> None:
 
     output = "\x1b[32m3 passed\x1b[0m\n    assert status != 'FAILED t.py::test_a'\n"
     assert _failed_pytest_nodes({"stdout": output}) == []
+
+
+def test_verifier_requests_failure_summary_even_when_repo_disables_it(monkeypatch, tmp_path) -> None:
+    """! @brief 验证裁判覆盖仓库 -rN，避免有失败却无法提取节点的误判。"""
+
+    from backend.src.evals import real_world
+
+    calls = []
+    monkeypatch.setattr(real_world, "run_tests", lambda *args, **kwargs: calls.append(kwargs) or {})
+    instance = real_world.SweBenchInstance("repo__repo-1", "repo/repo", "base", "issue", "", "", (), ())
+    real_world._run_verification_targets(instance, tmp_path, ["tests/t.py"])
+    assert calls[0]["targets"] == ["--color=no", "-r", "fE", "tests/t.py"]

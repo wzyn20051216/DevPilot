@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +53,15 @@ def _schedule(instances: list[str], repeats: int) -> list[dict[str, Any]]:
                     "instance_id": instance, "variant": variant, "repeat_index": repeat,
                 })
     return scheduled
+
+
+def _is_provider_blocked(row: dict[str, Any]) -> bool:
+    """! @brief 识别供应商额度/限流中断，避免计入修复率或跳过续跑。"""
+
+    error = str(row.get("error") or "").casefold()
+    return any(term in error for term in (
+        "error code: 402", "error code: 429", "insufficient balance",
+    ))
 
 
 def main() -> None:
@@ -170,7 +180,7 @@ def main() -> None:
         return
     completed = {
         (row["instance_id"], row["variant"], row["repeat_index"])
-        for row in report["rows"]
+        for row in report["rows"] if not _is_provider_blocked(row)
     }
     audits = {audit["instance_id"]: audit for audit in report["audits"]}
     for job in plan:
@@ -189,15 +199,26 @@ def main() -> None:
         row["wall_seconds_including_workspace_and_verifier"] = round(perf_counter() - started, 6)
         row["schedule_index"] = plan.index(job)
         row["completed_at"] = datetime.now(UTC).isoformat()
+        if _is_provider_blocked(row):
+            # 下次重跑会覆盖同作业的标准产物，先保留本次中断的原始证据。
+            attempt = len(report.get("provider_failures", [])) + 1
+            for field in ("trace_path", "patch_path"):
+                original = Path(row[field])
+                archived = original.with_name(
+                    f"{original.stem}__provider_attempt{attempt}{original.suffix}"
+                )
+                shutil.copy2(original, archived)
+                row[field] = str(archived)
+            report.setdefault("provider_failures", []).append(row)
+            persist("provider_blocked")
+            print(f"RUN BLOCKED {key} {job['variant']} r{job['repeat_index']} "
+                  f"tokens={row['total_tokens']}", flush=True)
+            raise RuntimeError("供应商额度/限流错误：已保留结果并停止，避免把它当作算法失败")
         report["rows"].append(row)
         persist("running")
         print(f"RUN END {key} {job['variant']} r{job['repeat_index']} "
               f"success={row['success']} tokens={row['total_tokens']} "
               f"agent_seconds={row['elapsed_seconds']:.1f}", flush=True)
-        error = str(row.get("error") or "").casefold()
-        if any(term in error for term in ("error code: 402", "error code: 429", "insufficient balance")):
-            persist("provider_blocked")
-            raise RuntimeError("供应商额度/限流错误：已保留结果并停止，避免把它当作算法失败")
     persist("completed" if all(a["baseline_failed"] for a in report["audits"])
             else "completed_with_invalid_environments")
     print(f"REPORT {report_path}", flush=True)

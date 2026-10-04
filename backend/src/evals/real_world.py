@@ -527,7 +527,11 @@ def _run_verification_targets(
     """! @brief 在官方实例环境中一次运行指定 pytest 节点。"""
 
     with use_sandbox_profile(_sandbox_profile(instance)):
-        return run_tests(str(workspace), targets=list(targets), timeout=300)
+        # 部分仓库使用 -rN 关闭短摘要；裁判需要明确节点名才能校准。
+        # 显式覆盖摘要和颜色选项，两组使用完全相同的测试命令。
+        return run_tests(
+            str(workspace), targets=["--color=no", "-r", "fE", *targets], timeout=300,
+        )
 
 
 def verify_real_patch(
