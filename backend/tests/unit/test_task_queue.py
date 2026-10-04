@@ -372,3 +372,20 @@ def test_remove_does_not_delete_active_claim(tmp_path, monkeypatch):
     queue.claim("worker")
     assert not queue.remove(task.id)
     assert queue.get(task.id).status == "claimed"
+
+
+def test_full_queue_allows_idempotent_enqueue_but_rejects_reset(tmp_path, monkeypatch):
+    """! @brief 幂等重试不受深度限制；恢复历史任务仍须检查容量。"""
+    from backend.src.exceptions import QueueFullError
+    repo = _init_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(settings, "task_queue_max_depth", 1)
+    queue = SQLiteTaskQueue()
+    first, other = _create_task(repo), _create_task(repo)
+    assert queue.enqueue(first.id, "first")
+    entry = queue.claim("worker")
+    queue.complete(first.id, True, worker_id="worker", fence_token=entry.fence_token)
+    assert queue.enqueue(other.id, "other")
+    assert queue.enqueue(other.id, "other") is False
+    with pytest.raises(QueueFullError):
+        queue.reset(first.id, "resume")
+    assert queue.get(first.id).status == "done"

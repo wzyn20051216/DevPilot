@@ -204,3 +204,70 @@ def test_startup_marks_orphaned_execution_interrupted(
 
     assert repository.mark_incomplete_as_interrupted() == 1
     assert repository.get_task(task.id).status == "interrupted"
+
+
+def test_inline_capacity_is_atomic_and_covers_resume(tmp_path, monkeypatch):
+    """! @brief 并发 execute/resume 共享容量；拒绝时不改变持久化状态。"""
+    from backend.src.config import settings
+    from backend.src.exceptions import QueueFullError
+
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "capacity.db")
+    monkeypatch.setattr(settings, "task_inline_max_running", 1)
+    connection.init_database()
+    repository = TaskRepository()
+    tasks = [_create_task(repository) for _ in range(2)]
+    repository.claim_status(tasks[1].id, {"awaiting_approval"}, "interrupted")
+    release = threading.Event()
+    barrier = threading.Barrier(3)
+    accepted, rejected = [], []
+
+    class BlockingRunner:
+        def execute_stream(self, **kwargs):
+            assert release.wait(5)
+            yield AgentEvent(type="final", agent="orchestrator", message="done")
+
+    service = TaskExecutionService(repository, lambda *args: BlockingRunner())
+
+    def request(task, expected):
+        barrier.wait()
+        try:
+            service.start_inline(task.id, expected)
+            accepted.append(task.id)
+        except QueueFullError:
+            rejected.append((task.id, expected))
+
+    threads = [threading.Thread(target=request, args=(t, status))
+               for t, status in zip(tasks, ["awaiting_approval", "interrupted"])]
+    try:
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(3)
+        assert len(accepted) == len(rejected) == 1
+        assert service.running_count() == 1
+        task_id, expected = rejected[0]
+        assert repository.get_task(task_id).status == expected
+    finally:
+        release.set()
+        for thread in list(service._threads.values()):
+            thread.join(3)
+
+
+def test_inline_thread_start_failure_restores_original_status(tmp_path, monkeypatch):
+    """! @brief 线程启动失败不遗留 running 状态或容量占位。"""
+    import pytest
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "failure.db")
+    connection.init_database()
+    repository = TaskRepository()
+    task = _create_task(repository)
+    service = TaskExecutionService(repository, lambda *args: None)
+
+    def fail_start(*args):
+        raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    with pytest.raises(RuntimeError, match="thread unavailable"):
+        service.start_inline(task.id, "awaiting_approval")
+    assert repository.get_task(task.id).status == "awaiting_approval"
+    assert service.running_count() == 0

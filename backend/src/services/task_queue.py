@@ -138,6 +138,10 @@ class SQLTaskQueue:
                 # 进写事务后再数排队行数：MySQL 默认 REPEATABLE READ，
                 # 不开事务的读会看到旧快照，无法反映刚提交的积压。
                 begin_write(conn)
+                if conn.execute(
+                    "SELECT task_id FROM task_queue WHERE task_id = ?", (task_id,),
+                ).fetchone() is not None:
+                    return False
                 self._check_depth(conn)
                 conn.execute(
                     """
@@ -472,6 +476,14 @@ class SQLTaskQueue:
         """
         now = _now_iso()
         with get_connection() as conn:
+            begin_write(conn)
+            row = conn.execute(
+                f"SELECT status FROM task_queue WHERE task_id = ?{for_update_skip_locked()}",
+                (task_id,),
+            ).fetchone()
+            if row is None or row["status"] not in {"done", "dead"}:
+                return False
+            self._check_depth(conn)
             cursor = conn.execute(
                 """
                 UPDATE task_queue
@@ -725,8 +737,10 @@ class RedisTaskQueue:
 
         result = self._lua_reset(
             keys=[self._key(task_id), self._INDEX, self._SEQUENCE],
-            args=[task_id, idempotency_key, _now_iso()],
+            args=[task_id, idempotency_key, _now_iso(), settings.task_queue_max_depth],
         )
+        if result == "full":
+            raise QueueFullError("任务队列已满，请稍后恢复", retry_after=5)
         return bool(result)
 
     def remove(self, task_id: str) -> bool:
@@ -916,10 +930,13 @@ return count
 
 _LUA_RESET = """
 local key, index, seq = KEYS[1], KEYS[2], KEYS[3]
-local task_id, idem, now = ARGV[1], ARGV[2], ARGV[3]
+local task_id, idem, now, max_depth = ARGV[1], ARGV[2], ARGV[3], tonumber(ARGV[4])
 local status = redis.call('HGET', key, 'status')
 if status ~= 'done' and status ~= 'dead' then
     return 0
+end
+if max_depth > 0 and redis.call('ZCARD', index) >= max_depth then
+    return 'full'
 end
 local priority = tonumber(redis.call('HGET', key, 'priority') or '0')
 redis.call('HSET', key, 'idempotency_key', idem, 'status', 'queued',

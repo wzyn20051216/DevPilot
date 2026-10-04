@@ -11,6 +11,7 @@ from ..agents.single_developer_agent import SingleDeveloperAgent
 from ..agents.strategy import AgentStrategy
 from ..config import settings
 from ..database.task_repository import TaskRepository
+from ..exceptions import InvalidTaskStateError, QueueFullError
 from ..models.agent_state import AgentEvent, PlanStep
 from ..models.task import DevelopmentTask
 from . import context_store
@@ -75,7 +76,7 @@ class TaskExecutionService:
     ) -> None:
         self.repository = repository
         self.orchestrator_factory = orchestrator_factory
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._cancel_events: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
 
@@ -106,6 +107,31 @@ class TaskExecutionService:
             self._threads[task_id] = thread
             thread.start()
 
+    def start_inline(self, task_id: str, expected_status: str) -> None:
+        """! @brief 在同一锁内检查容量、领取任务并启动，防止并发超售。
+
+        @param expected_status execute 为 awaiting_approval，resume 为 interrupted。
+        @exception QueueFullError 容量不足时保持任务原状态，允许稍后重试。
+        """
+
+        with self._lock:
+            limit = settings.task_inline_max_running
+            if limit > 0 and self.running_count() >= limit:
+                raise QueueFullError(
+                    f"本机已有 {limit} 个任务在执行，请稍后重试",
+                    retry_after=max(1, int(settings.task_worker_poll_seconds * 5)),
+                )
+            if not self.repository.claim_status(task_id, {expected_status}, "running"):
+                current = self.repository.get_task(task_id)
+                raise InvalidTaskStateError(f"当前任务状态无法执行：{current.status}")
+            try:
+                self.start(task_id)
+            except Exception:
+                self._threads.pop(task_id, None)
+                self._cancel_events.pop(task_id, None)
+                self.repository.claim_status(task_id, {"running"}, expected_status)
+                raise
+
     def cancel(self, task_id: str) -> bool:
         """! @brief 请求取消正在本进程执行的任务。"""
 
@@ -123,6 +149,16 @@ class TaskExecutionService:
         with self._lock:
             thread = self._threads.get(task_id)
             return thread is not None and thread.is_alive()
+
+    def running_count(self) -> int:
+        """! @brief 当前进程内在跑的任务数，供 inline 模式做背压判断。
+
+        只统计仍存活的线程：已结束但尚未被收尾清理的条目不应计入，
+        否则一次突发之后会一直误判为"已达上限"。
+        """
+
+        with self._lock:
+            return sum(1 for thread in self._threads.values() if thread.is_alive())
 
     def _persist_event(self, task_id: str, sequence: int, event: AgentEvent) -> None:
         """! @brief 持久化事件及其中的工具调用观测。"""

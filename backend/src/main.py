@@ -126,9 +126,17 @@ async def devpilot_error_handler(
     _request: Request,
     exc: DevPilotError,
 ) -> JSONResponse:
-    """! @brief 把业务异常转换为稳定、可供前端处理的错误结构。"""
+    """! @brief 把业务异常转换为稳定、可供前端处理的错误结构。
+
+    异常可以自带响应头（例如鉴权失败要求 ``WWW-Authenticate``）；背压类
+    异常还会带上 ``Retry-After``，告诉调用方多久之后可以重试。
+    """
 
     logger.warning("{}: {}", exc.code, exc.message)
+    headers = dict(getattr(type(exc), "headers", {}) or {})
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -137,6 +145,7 @@ async def devpilot_error_handler(
                 "message": exc.message,
             }
         },
+        headers=headers or None,
     )
 
 
@@ -445,20 +454,7 @@ def execute_task(task_id: str) -> StreamingResponse:
             raise InvalidTaskStateError(f"当前任务状态无法执行：{task.status}")
         return _enqueue_task_for_worker(task_id, task)
 
-    if not task_repository.claim_status(
-        task_id,
-        {"awaiting_approval"},
-        "running",
-    ):
-        current = task_repository.get_task(task_id)
-        raise InvalidTaskStateError(
-            f"当前任务状态无法执行：{current.status}",
-        )
-    try:
-        task_execution_service.start(task_id)
-    except Exception:
-        task_repository.claim_status(task_id, {"running"}, "failed")
-        raise
+    task_execution_service.start_inline(task_id, "awaiting_approval")
 
     return _task_event_stream(task_id, after_sequence=0)
 
@@ -542,17 +538,10 @@ def resume_task(task_id: str) -> StreamingResponse:
         if task.status != "interrupted":
             raise InvalidTaskStateError(f"当前任务状态无法恢复：{task.status}")
         return _enqueue_task_for_worker(task_id, task)
-    if not task_repository.claim_status(task_id, {"interrupted"}, "running"):
-        current = task_repository.get_task(task_id)
-        raise InvalidTaskStateError(f"当前任务状态无法恢复：{current.status}")
     # 必须在启动线程前固定游标。否则极快的 Agent 可能先写入首条恢复事件，
     # 随后读取的 next sequence 会把它误当成历史事件，导致当前 SSE 漏报。
     resume_after_sequence = task_repository.next_event_sequence(task_id) - 1
-    try:
-        task_execution_service.start(task_id)
-    except Exception:
-        task_repository.claim_status(task_id, {"running"}, "interrupted")
-        raise
+    task_execution_service.start_inline(task_id, "interrupted")
     return _task_event_stream(
         task_id,
         after_sequence=resume_after_sequence,

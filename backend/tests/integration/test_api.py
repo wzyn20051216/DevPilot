@@ -121,3 +121,19 @@ def test_queued_resume_stream_waits_for_worker(monkeypatch):
         return [item async for item in main._task_event_stream("task", 0).body_iterator]
 
     assert "done" in "".join(asyncio.run(consume()))
+
+
+def test_inline_backpressure_keeps_status_and_returns_retry_after(tmp_path, monkeypatch):
+    """! @brief execute/resume 超限均返回 429 与 Retry-After，允许重试。"""
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "capacity.db")
+    monkeypatch.setattr(main.settings, "task_inline_max_running", 1)
+    monkeypatch.setattr(main.task_execution_service, "running_count", lambda: 1)
+    with TestClient(app) as client:
+        for status, command in [("awaiting_approval", "execute"), ("interrupted", "resume")]:
+            task = task_repository.create_task(repo_path=str(tmp_path), question="fix", plan=[])
+            if status == "interrupted":
+                task_repository.claim_status(task.id, {"awaiting_approval"}, status)
+            response = client.post(f"/api/tasks/{task.id}/{command}")
+            assert response.status_code == 429
+            assert int(response.headers["Retry-After"]) > 0
+            assert task_repository.get_task(task.id).status == status
