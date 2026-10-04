@@ -84,6 +84,8 @@ class SingleDeveloperAgent(BaseToolAgent):
             "run_test",
             "run_command",
             "protocol_probe",
+            "analyze_repository_context",
+            "analyze_code_semantics",
         }
         if enable_rag:
             tools.add("retrieve_code")

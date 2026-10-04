@@ -366,6 +366,22 @@ def execute_tool(
             probes=arguments["probes"],
         )
 
+    if tool_name == "analyze_repository_context":
+        return analyze_repository_context(
+            repo_path=repo_path,
+            focus_area=arguments.get("focus_area"),
+            target_function=arguments.get("target_function"),
+        )
+
+    if tool_name == "analyze_code_semantics":
+        return analyze_code_semantics(
+            repo_path=repo_path,
+            file_path=arguments.get("file_path"),
+            target_class=arguments.get("target_class"),
+            target_function=arguments.get("target_function"),
+            check_types=arguments.get("check_types", False),
+        )
+
     raise ValueError(
         f"Unknown tool name: {tool_name}"
     )
