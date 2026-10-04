@@ -1,6 +1,6 @@
 # DevPilot
 
-DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。它将 Planner、Coder、Tester 和 Reviewer 串成带人工审批的研发流程，并通过 Hybrid Code RAG、MCP、Docker Sandbox、SQLite Tracing 和评测框架提供可观测、可复现的执行过程。
+DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。它将 Planner、Coder、Tester 和 Reviewer 串成带人工审批的研发流程，并通过 Hybrid Code RAG、MCP、Docker Sandbox、SQLite/MySQL Tracing 和评测框架提供可观测、可复现的执行过程。
 
 系统化学习项目设计、核心实现与实验结论，请阅读 [`docs/technical-handbook.md`](docs/technical-handbook.md)。
 
@@ -18,7 +18,7 @@ DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。�
 - 上下文断点恢复：服务重启后 resume 优先恢复中断前的模型上下文；恢复消息后编排流程仍会重新进入，工具可能重放
 - MCP Repository / GitHub 工具发现与调用
 - Docker 隔离测试、角色工具权限和路径边界校验
-- 持久化任务队列与独立 Sandbox Worker（`TASK_QUEUE_BACKEND=sqlite|redis`，租约 / 心跳 / 幂等），支持 API 与执行分离部署
+- 持久化任务队列与独立 Sandbox Worker（`TASK_QUEUE_BACKEND=sqlite|redis`，租约 / 心跳 / 幂等 / 令牌校验 / 背压），状态可选 SQLite/MySQL，支持 API 与执行分离部署
 - 后台执行、协作式取消、重启恢复、SSE 断线续传与 SQLite Trace
 - 彩色 Diff、测试报告、Review 结论和 Draft PR Preview
 - 四种 Agent 架构的 Benchmark、Ablation 和 Evaluation Dashboard，覆盖 TypeScript / Java 与跨文件大型 Issue
@@ -73,9 +73,10 @@ flowchart LR
 
 ## Safety
 
-当前 API 未提供用户鉴权与多租户隔离，仅适用于可信本地环境。`completed` 表示执行流程正常结束，不等于独立测试通过；只有评测器的 verifier 有独立判分。生产限制及本次核查见 [项目复核](docs/project-review.md)。
+业务 API 支持 API Key 与仓库根目录白名单；production 无 Key 拒绝启动。当前没有多租户隔离，仍需完成多机故障验收。`completed` 表示执行流程正常结束，不等于独立测试通过；只有评测器的 verifier 有独立判分。生产限制及本次核查见 [项目复核](docs/project-review.md)。
 
-- 文件工具使用仓库根目录校验，拒绝 `../` 路径逃逸。
+- API 校验授权根目录与符号链接，历史任务在执行/发布前再次授权；文件工具拒绝 `../` 路径逃逸。
+- 前端 axios 与 SSE 携带 Key，401 提示输入，验证后由用户重新发起操作。
 - Agent 按角色获得工具白名单，Tester 和 Reviewer 默认无写权限。
 - Sandbox 禁网、只读挂载仓库，并限制 CPU、内存和进程数。
 - 执行计划与 GitHub 发布均需要人工确认。
@@ -150,7 +151,8 @@ npm run build
 ```powershell
 Copy-Item .env.example .env
 Copy-Item backend\.env.example backend\.env
-# 在两个 .env 中填写宿主机工作区和服务配置
+# 在两个 .env 中填写宿主机工作区和服务配置；backend/.env 必须设置 API_KEYS
+# 容器内 ALLOWED_REPO_ROOTS=/workspace
 docker compose up --build
 ```
 
@@ -188,6 +190,13 @@ docker compose up --build
 | `MCP_TIMEOUT_SECONDS` | Repository MCP 调用超时秒数 | `30` |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | GitHub MCP 凭据 | empty |
 | `DATABASE_PATH` | SQLite 文件路径 | `backend/data/devpilot.db` |
+| `DATABASE_BACKEND` / `MYSQL_URL` | SQLite 或 MySQL 8.0+ 业务状态；MySQL URL 是敏感配置 | `sqlite` / empty |
+| `MYSQL_POOL_SIZE` | 空闲 MySQL 连接复用上限（不是活动连接硬上限） | `8` |
+| `API_KEYS` | 逗号分隔的 API Key；production 必填 | empty |
+| `ALLOWED_REPO_ROOTS` | 授权仓库根目录，逗号分隔；容器填写 `/workspace` | empty |
+| `TASK_QUEUE_MAX_DEPTH` | 新入队/显式恢复的 queued 上限；0 不限制，MySQL 软上限 | `100` |
+| `TASK_WORKER_MAX_CONCURRENCY` | 每个 Worker 的并发任务数 | `2` |
+| `TASK_INLINE_MAX_RUNNING` | 单 API 进程 inline 任务上限；0 不限制 | `8` |
 | `CORS_ORIGINS` | 允许直连 FastAPI 的浏览器来源 | localhost |
 | `WORKSPACE_ROOT` | Backend 容器内工作区 | `/workspace` |
 | `HOST_WORKSPACE_ROOT` | Docker daemon 可见的宿主机工作区 | empty |
@@ -199,7 +208,8 @@ docker compose up --build
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/healthz` | 进程存活检查 |
-| `GET` | `/readyz` | SQLite 与 Docker 能力检查 |
+| `GET` | `/readyz` | 数据库与 Docker 能力检查 |
+| `GET` | `/api/auth/check` | 验证 API Key，不调用模型 |
 | `POST` | `/api/tasks/plan` | 生成待审批计划 |
 | `POST` | `/api/tasks/{id}/execute` | SSE 执行任务 |
 | `GET` | `/api/tasks/{id}/events?after_sequence=N` | SSE 断线续传 |
@@ -237,7 +247,8 @@ DevPilot/
 
 默认 Compose 会把 `/var/run/docker.sock` 挂给 Backend 以便本地演示中启动 Sandbox，这相当于给予 Backend 很高的宿主机权限，不应直接作为公网生产部署。现在提供两种强化路径（详见 [`docs/deployment.md`](docs/deployment.md)）：
 
-- **API / Worker 分离**：先在 `backend/.env` 设置 `TASK_QUEUE_BACKEND=sqlite`，再运行 `docker compose --profile worker up`；仅启用 profile 不会切换 API 执行模式。SQLite 租约过期会隔离为 dead，并将运行任务标为 interrupted；确认旧 Worker 已停止后显式恢复，不承诺自动故障切换。Redis 是未经生产验收的实验后端。
+- **API / Worker 分离**：先在 `backend/.env` 设置 `TASK_QUEUE_BACKEND=sqlite`，再运行 `docker compose --profile worker up`；仅启用 profile 不会切换 API 执行模式。SQLite 租约过期会隔离为 dead，并将运行任务标为 interrupted；确认旧 Worker 已停止后显式恢复，不承诺自动故障切换。Redis 已使用 Lua 原子队列并通过本机集成验证，生产故障验收仍未完成。
+- **MySQL / Redis**：Compose 提供可选存储 profile；API/Worker 的配置保持一致。停机迁移脚本、配置与竞争窗口见 [部署文档](docs/deployment.md)。
 - **独立 Docker Host / K8s**：Worker 通过 `DOCKER_HOST` 连接独立 Docker daemon，API 不再持有 docker.sock；`deploy/kubernetes/` 提供 API + Worker 分离部署的示例清单，K8s Job 与 Firecracker 的演进路径同样见部署文档。
 
 ## License

@@ -293,3 +293,14 @@ docker run --rm --mount "type=bind,source=E:/desktop/DevPilot/backend/data,targe
 ```
 
 生成的实验目录位于 `backend/data/experiments`、`backend/data/retrieval_evals` 和 `backend/data/real_world_evals`。这些运行产物默认不提交 Git；报告中的 run ID 用于在本机定位原始证据。
+
+
+## 多角色链路可靠性复测（2026-10-04）
+
+批次 `da27d422f1824d5691dc712296825833` 使用 DeepSeek V4 Flash、temperature=0.2，针对 9 个自建 Python 用例，每题重复 3 次，变体仅为 multi_no_rag。数据库核对共 27 条结果，端到端 success 与固定裁判测试均为 **27/27（100%）**；平均执行耗时 76.03 秒、平均总 Token 46,696，平均工具调用 28 次，仅 1 次运行触发修复轮。
+
+本轮接续没有重新调用 LLM，而是对保存的 27 份候选工作区重新运行独立 verifier（不采纳 Agent 对测试通过的声明、不把候选测试改动交给裁判）。**裁判重放仍为 27/27 通过**，当前数据集指纹与该批配置的 `0d766f28…` 一致。逐次结果与配置见 [CSV](experiments/synthetic_reliability_2026-10-04.csv) 和 [JSON](experiments/synthetic_reliability_2026-10-04.json)。
+
+历史批次 `68b84e0dd14f42afbe69788ed6260af3` 中相同 9 个 case ID 的 multi_no_rag 也是 27 次，但只有 **14/27（51.9%）success**，固定测试为 **26/27（96.3%）**。这种“测试大多通过、流程仍失败”的差距与会话中定位的结构化输出/收尾故障一致。历史与当前批次的数据集指纹不同，且没有逐项控制所有代码和策略变化，因此只能视为历史回归比较，不能当作严格消融或把提升全部归因于一个补丁。
+
+本结果证明这些合成用例上的执行链和收尾已经能完整通过，不说明大型真实缺陷也有 100% 修复率，不改变第五轮真实缺陷自研 verifier 的 21/33 或官方 harness 的复核记录。RAG 是否有收益仍需大仓库配对实验，本次未新增相关结论。

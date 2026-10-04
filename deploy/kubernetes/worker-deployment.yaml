@@ -22,6 +22,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: devpilot-config
+            - secretRef:
+                name: devpilot-secrets
           env:
             - name: DATABASE_PATH
               value: /app/backend/data/devpilot.db

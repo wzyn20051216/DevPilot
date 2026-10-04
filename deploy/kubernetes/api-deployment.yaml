@@ -23,6 +23,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: devpilot-config
+            - secretRef:
+                name: devpilot-secrets
           env:
             - name: DATABASE_PATH
               value: /app/backend/data/devpilot.db
@@ -45,7 +47,7 @@ spec:
               mountPath: /app/backend/data
             - name: workspace
               mountPath: /workspace
-      # 注意：SQLite 后端时，data 卷必须与 Worker 共享同一份持久存储。
+      # 默认示例用 MySQL 共享状态；data 卷仅在改为同机 SQLite 时使用。
       volumes:
         - name: data
           persistentVolumeClaim:

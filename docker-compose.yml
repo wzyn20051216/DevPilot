@@ -50,7 +50,6 @@ services:
       - ./backend/.env
     environment:
       APP_ENV: production
-      TASK_QUEUE_BACKEND: sqlite
       DATABASE_PATH: /app/backend/data/devpilot.db
       WORKSPACE_ROOT: /workspace
       HOST_WORKSPACE_ROOT: ${DEVPILOT_HOST_WORKSPACE_ROOT}
@@ -62,6 +61,39 @@ services:
     profiles: ["worker"]
     restart: unless-stopped
 
+  # 按需启动存储服务；API/Worker 的连接串统一写入 backend/.env。
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DEVPILOT_MYSQL_ROOT_PASSWORD:-}
+      MYSQL_DATABASE: devpilot
+      MYSQL_USER: devpilot
+      MYSQL_PASSWORD: ${DEVPILOT_MYSQL_PASSWORD:-}
+    volumes:
+      - devpilot_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    profiles: ["mysql"]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - devpilot_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles: ["redis"]
+    restart: unless-stopped
+
 volumes:
   # SQLite 使用 Docker 管理的 Linux 文件系统，避免 Windows bind mount 锁冲突。
   devpilot_data:
+  devpilot_mysql:
+  devpilot_redis:

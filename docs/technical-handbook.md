@@ -740,7 +740,7 @@ DevPilot/
 ├── backend/
 │   ├── src/
 │   │   ├── agents/       # Agent 循环与多角色编排
-│   │   ├── database/     # SQLite 和 Repository
+│   │   ├── database/     # SQLite/MySQL 适配与 Repository
 │   │   ├── evals/        # 合成/真实评测与统计
 │   │   ├── mcp_clients/  # Repository/GitHub MCP 客户端
 │   │   ├── mcp_servers/  # Repository MCP Server
@@ -783,7 +783,9 @@ DevPilot/
 | 动态 RAG | 源文件数量和查询定位信号的启发式规则 | API 与 Worker 现共享策略；阈值并非通过大仓库对照实验优化所得 |
 | 动态 Agent 策略 | 按 Python 占比、目标文件行数、仓库规模与问题语义选择 `code_outline`/强制探针 | API、Worker、真实评测共用纯函数；7 个已评测 Verified 题的离线决策 smoke 通过，尚无新的端到端成功率结论 |
 | Token 优化 | 观测去重、历史摘要、缓存 usage 统计 | 单题成本下降，合成小任务成本反而上升；无总体净收益结论 |
-| API/Worker 分离 | SQLite 队列、领取、心跳、失败重试、死信 | 租约丢失采用隔离后人工恢复；Redis 为非原子实验实现；无多机生产验收 |
+| API/Worker 分离 | SQLite/MySQL SQL 队列、Redis Lua、令牌校验、心跳、有限重试、背压 | 本机三后端集成通过；执行层校验到写入有竞争窗口；无真实多机故障验收 |
+| 接口与仓库授权 | API Key、根目录白名单、路径/链接解析、历史任务再次校验 | 无租户隔离；共享 Key 不能区分用户；生产启动必须配置 Key |
+| 共享业务状态 | SQLite/MySQL 双后端、九表停机迁移与回滚 | MySQL 已测本机全链路；工作区共享需另行部署 |
 | 隔离部署 | Docker 沙箱与独立 daemon 配置入口 | K8s 清单是示例；每任务 Job 和 Firecracker 适配器均未实现 |
 | 跨语言任务 | TS、Java、Python 跨模块各一个合成 fixture | fixture 可验收不等于 Agent 已修好真实跨语言 Issue |
 | 消息恢复 | 角色消息保存、加载、恢复事件 | 不是编排阶段检查点，也不保证工具只执行一次 |
@@ -794,7 +796,7 @@ DevPilot/
 
 多角色模式仍从 `execute_stream` 入口运行；已完成阶段、返工轮数、文件修改和外部工具副作用没有统一事务。因此断电可能发生在“文件已改，快照尚未写入”的窗口。恢复前要检查工作区，不能把消息恢复描述为无损接续整个工作流。
 
-SQLite 队列中租约过期会把队列项隔离为 `dead`，并把运行中的任务置为 `interrupted`。确认旧 Worker 已停止后才可显式 `/resume`。租约超时本身不能证明旧进程停止，当前没有跨进程 fencing，因此不自动把写代码任务交给另一 Worker。
+SQLite 队列中租约过期会把队列项隔离为 `dead`，并把运行中的任务置为 `interrupted`。确认旧 Worker 已停止后才可显式 `/resume`。租约超时本身不能证明旧进程停止，执行层已在事件、检查点和收尾前校验 owner/token/有效租约，但校验与持久化不是同一事务，仍有竞争窗口；不自动把写代码任务交给另一 Worker。
 
 ### 10.3 动态 Agent 策略路由
 
@@ -882,3 +884,14 @@ Agent 在后台线程中执行，事件写入 SQLite；SSE 只是数据库事件
 ```
 
 > 最可靠的项目介绍方式，是同时给出代码、复现命令、原始报告和失败案例。DevPilot 的价值不在于声称 Agent 已经无所不能，而在于建立了一套可以持续验证和改进 Agent 的工程闭环。
+
+
+### 10.3 队列、鉴权与迁移的学习入口（2026-10-04）
+
+建议按以下顺序理解运行可靠性：`database/connection.py` 统一连接和方言；`services/task_queue.py` 负责原子领取、租约和队列状态；`worker.py` 控制并发与心跳；`task_execution_service.py` 处理事件持久化、容量准入和租约丢失；`security.py` 校验 API Key 和仓库根目录。
+
+SQL 队列名中的 sqlite 是历史配置值；选择 `DATABASE_BACKEND=mysql` 时，同一 SQLTaskQueue 使用 MySQL 行锁。Redis 操作在 Lua 中原子完成，优先级降序、同优先级按原入队序号领取；状态索引覆盖 queued/claimed/done/dead。队列回收与业务状态是同一 SQL 事务，Redis 与 SQL 之间则有双写边界。
+
+API Key 和模型供应商的 LLM_API_KEY 是两种凭据：前者保护 DevPilot 业务接口，后者仅用于后端调用模型。前端不接收供应商 Key。新任务路径在 Schema 中校验，历史任务及 Worker 会再次校验，防止白名单收紧后继续访问旧目录。
+
+完整构建、启动、停机迁移、测试命令及已知限制见 [部署文档](deployment.md)。9 个 Python 自建用例、各 3 次的可靠性复测为 27/27，独立裁判重放也为 27/27；这是基础链路回归，不是 SWE-bench 真实缺陷成功率。实验记录见 [当前评测结论](current-evaluation.md)，简历表述见 [简历材料](resume-devpilot.md)。

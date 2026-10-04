@@ -9,5 +9,10 @@ data:
   APP_ENV: "production"
   LOG_LEVEL: "INFO"
   TASK_QUEUE_BACKEND: "redis"
+  DATABASE_BACKEND: "mysql"
+  ALLOWED_REPO_ROOTS: "/workspace"
+  TASK_QUEUE_MAX_DEPTH: "100"
+  TASK_WORKER_MAX_CONCURRENCY: "2"
   REDIS_URL: "redis://redis-host:6379/0"
-  DOCKER_HOST: "tcp://docker-host.local:2375"
+  # 远端 daemon 的 TLS 与证书挂载需按实际集群补充。
+  DOCKER_HOST: "tcp://docker-host.local:2376"

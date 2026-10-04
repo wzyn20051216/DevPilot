@@ -10,6 +10,28 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # 专用临时服务，集成测试不接触生产数据库。
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: devpilot
+          MYSQL_DATABASE: devpilot_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=5s --health-timeout=3s --health-retries=30
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=3s --health-retries=10
+    env:
+      TEST_MYSQL_URL: mysql://root:devpilot@127.0.0.1:3306/devpilot_test
+      TEST_REDIS_URL: redis://127.0.0.1:6379/1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
