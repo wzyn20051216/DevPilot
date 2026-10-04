@@ -32,10 +32,11 @@ SQLite 的过期隔离是有意收紧语义：租约失效不证明旧进程已�
 - Git checkout 不完整是历史观察；上游 Git 竞态与 WorkBuddy 沙箱误报两种根因说法都未独立证实。保留防御性修复，撤回确定性归因。
 - WorkBuddy 的 UTF-8 字节 stdin 改动通过真实 Git hash-object 检查（包含中文与 LF），证明本地换行不被传输层改写；这不等于全部真实仓库校准已通过；第五轮有 9/20 题未通过校准门禁。
 - 第六轮针对失败题新增 6 次 DeepSeek 探索运行：Flash 24 轮、Pro、Pro 高强度思考和执行层编辑门禁均未使目标题通过；详情见[当前评测记录](current-evaluation.md)。这些是已知失败题上的单次诊断，不回填第五轮 21/33。
+- 第五轮补丁现可按每题每次导出为官方 JSONL。官方 Linux harness 对 3 次重复的 33 份补丁判定为 18 resolved、12 unresolved、3 镜像启动错误；其中 `pydicom-1413` 的官方金补丁也因相同 PASS_TO_PASS 失败而 unresolved，属于环境不可有效判分。对照数据见[官方复核 CSV](experiments/official_lite_dev_probe_2026-10-04.csv)。这进一步说明 21/33 仅是自研 verifier 的描述性结果。
 
 ## 验证记录
 
-修改前后端基线 113 项通过。2026-10-04 后端完整套件 129 项通过；前端此前的 5 项测试、TypeScript 检查和生产构建通过，本轮未修改前端。前端构建仍提示 EvaluationView 分包约 507.53 kB；它是性能优化项，不是构建失败。
+修改前后端基线 113 项通过。2026-10-04 接入官方导出与评测写入保护后，后端完整套件 134 项通过；前端此前的 5 项测试、TypeScript 检查和生产构建通过，本轮未修改前端。前端构建仍提示 EvaluationView 分包约 507.53 kB；它是性能优化项，不是构建失败。
 
 ```powershell
 .venv\Scripts\python.exe -m pytest

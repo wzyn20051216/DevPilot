@@ -159,7 +159,30 @@
 
 结论是**没有观察到通过率提升**。24 轮两题均失败且显著增加 Token，默认 14 轮已恢复；Pro 与 `max` 也没有解决 pydicom 的协议边界。astroid 首次 Pro／`max` 运行在第 9 轮后继续执行搜索工具，14 轮耗尽仍无补丁：内核此前只缩小了发给模型的工具列表，却仍按角色总权限执行模型返回的旧工具名。现已让执行层按本轮工具列表拒绝越界调用，并通过回归测试。修复后的同题重跑在第 9 轮拒绝搜索、第 10 轮生成补丁，但 verifier 仍有 1 个非预期失败；pytest 输出中的另一项是金补丁上也失败、已被校准排除的节点。可见门禁修复了执行漏洞，**尚未证明修复质量提升**。
 
-另一个生产行为缺陷是模型会在 `run_test` 未通过时口头宣称“测试已通过”。现在最终答复前会根据**最后一次代码修改之后**的 `run_test` 记录追加机器验证状态；测试通过后再次修改会撤销旧结论。离线完整套件 129 项通过。这是结论可信度修复，不改变上述独立 verifier 的失败结果。后续实验需要先冻结配置和评测口径，再用未调参的新题比较；不能靠不断试已知失败题追求 100%。
+另一个生产行为缺陷是模型会在 `run_test` 未通过时口头宣称“测试已通过”。现在最终答复前会根据**最后一次代码修改之后**的 `run_test` 记录追加机器验证状态；测试通过后再次修改会撤销旧结论。截至本轮，后端完整套件 134 项通过。这是结论可信度修复，不改变上述独立 verifier 的失败结果。后续实验需要先冻结配置和评测口径，再用未调参的新题比较；不能靠不断试已知失败题追求 100%。
+
+## 第七轮：官方 harness 复核与失败归因（2026-10-04）
+
+第五轮的 21/33 是自研文件级 verifier 的结果，不能直接称为 SWE-bench 官方 resolved。现在已从原始 `report.json` 导出每题每次的标准 JSONL，字段为 `instance_id`、`model_name_or_path`、`model_patch`，并保存来源 manifest。旧补丁在 Windows 落盘时曾从 LF 变成 CRLF，导致磁盘字节数与报告不符；导出器只还原 CRLF→LF 再核验记录长度，今后的补丁写入固定使用 LF。三个重复批次均成功导出 11 份补丁，实例 ID 无重复、无空补丁。导出器见 `backend/src/evals/export_official_predictions.py`。
+
+用官方 `swebench==4.0.5` Linux harness、`princeton-nlp/SWE-bench_Lite` 的 `dev` split 和已缓存的官方实例镜像评测全部三个重复批次，`run_id` 分别为 `devpilot_c1f4a_r1_official_all`、`devpilot_c1f4a_r2_official_all`、`devpilot_c1f4a_r3_official_all`。**每批 11 份提交都是 6 resolved、4 unresolved、1 harness error；合计 18 resolved、12 unresolved、3 harness error。**这不是 18/33 的可比榜单成绩，因为样本经本项目校准筛选，且有环境异常。逐次对照见[官方复核 CSV](experiments/official_lite_dev_probe_2026-10-04.csv)。官方指南说明了[预测格式、`--split`/`--instance_ids` 与唯一 run_id 要求](https://github.com/SWE-bench/SWE-bench/blob/main/docs/guides/evaluation.md)。
+
+- 6 个官方 resolved：marshmallow-1343/1359、pydicom-1256/1694、astroid-1196/1866。
+- 3 个候选补丁确实未解决：pydicom-1139、astroid-1333、astroid-1978。它们的失败节点与自研 verifier 一致。`astroid-1978` 的一次旧运行曾修改原测试，造成工作区 `run_test` 通过而独立验证失败；真实评测现已在写入层阻止修改测试/配置。防护后的真实重跑 `a01ac923109e40ce970067a889d1e788` 仍失败，说明可信度提升不等于能力提升。
+- pydicom-1413 的候选补丁通过 3 个 FAIL_TO_PASS，但 2 个 PASS_TO_PASS 失败，所以官方判 unresolved；同一镜像下官方金补丁也因**相同 2 项**失败而 unresolved（对照 `run_id=devpilot_gold_pydicom1413_official`）。本项目自研 verifier 排除了这两项后判通过，应明确标为“校准后通过／官方环境不可有效判分”，不能算官方成功或归咎于 Agent。
+- sqlfluff-1763 的官方实例镜像无法按 harness 指定的 `root` 用户启动：`unable to find user root: no matching entries in passwd file`。这是 harness error；自研 verifier 使用该镜像自身默认用户执行时则有 1 个未预期失败。两种结果不能合并成一次模型失败。
+
+这次对照揭示：**优先修评测口径与环境，随后再谈优化通过率。** 当前不应以“剩余 12 次未通过”作为 12 个独立代码缺陷去逐一补答案；它们是 4 道题各重复 3 次，其中有无法按官方标准有效判分的环境问题。对已知失败题继续针对测试节点调提示词，只能算开发集诊断，不能证明泛化；下一轮必须冻结策略，在未看过结果的实例上做官方判分。
+
+在项目根目录的 PowerShell 中复核第 1 次重复（`--split dev` 不可省；重复补丁必须更换 `--run_id`，避免官方缓存复用旧结果）：
+
+```powershell
+.\.venv\Scripts\python.exe -m backend.src.evals.export_official_predictions backend/data/real_world_evals/c1f4af0e7bf141b0bb4bb77da165d610/report.json --variant single_no_rag --repeat-index 1
+docker build -t devpilot-swebench-harness:4.0.5 -f backend/docker/swebench-harness.Dockerfile backend/docker
+docker run --rm --mount "type=bind,source=E:/desktop/DevPilot/backend/data,target=/workspace" --mount "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock" --workdir /workspace/official_harness -e HF_HOME=/workspace/official_harness/hf_cache devpilot-swebench-harness:4.0.5 python -m swebench.harness.run_evaluation --dataset_name princeton-nlp/SWE-bench_Lite --split dev --predictions_path /workspace/real_world_evals/c1f4af0e7bf141b0bb4bb77da165d610/predictions__single_no_rag__r1.jsonl --max_workers 3 --run_id devpilot_c1f4a_r1_official_all
+```
+
+最后一条命令的 `source=E:/desktop/DevPilot/backend/data` 须按本机项目路径调整；本机已有 11 个实例镜像。日志和官方报告保存在被忽略的 `backend/data/official_harness/` 中。`swebench==5.0.2` 当前要求新格式的 `image`/`eval_script` 字段，不适用于这里的旧 Lite dev 数据；`4.0.5` 的旧 harness 在 Windows 原生 Python 下依赖 Linux `resource` 模块，因此用隔离 Docker 运行。
 
 ## 合成回归与检索评测
 

@@ -1,0 +1,34 @@
+instance_id,repeat_index,local_verifier_passed,official_status,gold_control,note
+marshmallow-code__marshmallow-1343,1,true,resolved,not_run,
+marshmallow-code__marshmallow-1343,2,true,resolved,not_run,
+marshmallow-code__marshmallow-1343,3,true,resolved,not_run,
+marshmallow-code__marshmallow-1359,1,true,resolved,not_run,
+marshmallow-code__marshmallow-1359,2,true,resolved,not_run,
+marshmallow-code__marshmallow-1359,3,true,resolved,not_run,
+pydicom__pydicom-1139,1,false,unresolved,not_run,
+pydicom__pydicom-1139,2,false,unresolved,not_run,
+pydicom__pydicom-1139,3,false,unresolved,not_run,
+pydicom__pydicom-1256,1,true,resolved,not_run,
+pydicom__pydicom-1256,2,true,resolved,not_run,
+pydicom__pydicom-1256,3,true,resolved,not_run,
+pydicom__pydicom-1413,1,true,unresolved,unresolved,gold also unresolved; same two PASS_TO_PASS failures
+pydicom__pydicom-1413,2,true,unresolved,unresolved,gold also unresolved; same two PASS_TO_PASS failures
+pydicom__pydicom-1413,3,true,unresolved,unresolved,gold also unresolved; same two PASS_TO_PASS failures
+pydicom__pydicom-1694,1,true,resolved,not_run,
+pydicom__pydicom-1694,2,true,resolved,not_run,
+pydicom__pydicom-1694,3,true,resolved,not_run,
+pylint-dev__astroid-1196,1,true,resolved,not_run,
+pylint-dev__astroid-1196,2,true,resolved,not_run,
+pylint-dev__astroid-1196,3,true,resolved,not_run,
+pylint-dev__astroid-1333,1,false,unresolved,not_run,
+pylint-dev__astroid-1333,2,false,unresolved,not_run,
+pylint-dev__astroid-1333,3,false,unresolved,not_run,
+pylint-dev__astroid-1866,1,true,resolved,not_run,
+pylint-dev__astroid-1866,2,true,resolved,not_run,
+pylint-dev__astroid-1866,3,true,resolved,not_run,
+pylint-dev__astroid-1978,1,false,unresolved,not_run,
+pylint-dev__astroid-1978,2,false,unresolved,not_run,
+pylint-dev__astroid-1978,3,false,unresolved,not_run,
+sqlfluff__sqlfluff-1763,1,false,harness_error,not_run,official image cannot start: no root passwd entry
+sqlfluff__sqlfluff-1763,2,false,harness_error,not_run,official image cannot start: no root passwd entry
+sqlfluff__sqlfluff-1763,3,false,harness_error,not_run,official image cannot start: no root passwd entry

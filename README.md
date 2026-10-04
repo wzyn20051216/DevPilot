@@ -89,6 +89,8 @@ flowchart LR
 
 项目还提供 SWE-bench Lite dev 真实缺陷的受控评测：首轮 3 题对照，第五轮抽样 20 题、其中 11 题通过校准并各运行 3 次，以及文件级 RAG 检索评测。真实评测使用官方实例镜像、固定 base commit、基线/金补丁校准，并排除候选测试改动。当前实测结论与限制见 [`docs/current-evaluation.md`](docs/current-evaluation.md)。
 
+第五轮自研 verifier 记录为 21/33；33 份补丁经官方 Linux SWE-bench harness 复核，为 18 resolved、12 unresolved、3 镜像启动错误。另有一题的官方金补丁也在该环境下 unresolved，因此这些数字不能作为公开榜单分数。逐次证据与复现命令见 [`docs/current-evaluation.md`](docs/current-evaluation.md)。
+
 ```powershell
 # 不调用 LLM：审计数据集结构和初始失败状态
 uv run python -m backend.src.evals.audit

@@ -605,6 +605,8 @@ Planner、Tester 和 Reviewer 分别映射到 `PlannerOutput`、`TesterOutput` �
 
 **后续真实结果（2026-10-04）**：分层抽样 20 题，9 题未通过校准；通过校准的 11 题各运行 3 次，共 21/33 次通过本项目文件级 verifier，按题为 7/11。四个失败题各 0/3。针对失败题增加轮数、改用 DeepSeek Pro 和高强度思考的单次探索均未观察到通过率提升；执行层“编辑阶段仍可运行搜索工具”的漏洞虽已修复，astroid-1333 同题重跑仍未通过。完整配置、run_id、Token 与失败点见[当前评测记录](current-evaluation.md)。这些数据来自自研 verifier，不能与官方 SWE-bench 榜单直接比较。
 
+**官方判分复核**：第五轮 3 次重复的 33 份补丁已按轮次导出 JSONL，并用 Linux 上的官方 `swebench==4.0.5` harness、Lite dev split 实跑。每轮均为 6 resolved、4 unresolved、1 镜像启动错误，合计 18/12/3。自研 verifier 判通过的 `pydicom-1413` 被官方判 unresolved，但官方金补丁在同一镜像、同一 harness 下也因相同的 2 个 PASS_TO_PASS 失败而 unresolved；它应标记为环境不可有效判分。`sqlfluff-1763` 官方镜像没有 `root` 用户，harness 无法启动。可复核逐次数据见[官方复核 CSV](experiments/official_lite_dev_probe_2026-10-04.csv)。这批样本经过校准选择，也含已分析过的任务，不能作为市场榜单分数。
+
 ### 7.7 如何正确表达实验结论
 
 可以说：
