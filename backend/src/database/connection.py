@@ -190,11 +190,12 @@ class _MySQLPool:
             if raw is None:
                 return _connect_mysql()
             try:
-                raw.ping(reconnect=True)
+                raw.ping()
                 return raw
             except Exception:  # noqa: BLE001 - 失效连接直接丢弃并重试
                 with suppress(Exception):
                     raw.close()
+                # 回到循环开头：先看池里是否还有别的空闲连接，没有则新建。
 
     def release(self, raw: Any) -> None:
         with suppress(Exception):

@@ -17,6 +17,10 @@ from ..models.task import DevelopmentTask
 from . import context_store
 
 
+class _FenceLost(RuntimeError):
+    """! @brief 内部控制信号：停止旧执行者，禁止写入失败或完成状态。"""
+
+
 class OrchestratorProtocol(Protocol):
     """执行服务依赖的最小编排器协议。"""
 
@@ -196,9 +200,9 @@ class TaskExecutionService:
         """
 
         def callback(agent_name: str, messages: list[dict[str, Any]]) -> None:
-            if fence_check is not None and not fence_check():
-                return
             try:
+                if fence_check is not None and not fence_check():
+                    return
                 context_store.save_context(
                     task_id,
                     agent_name,
@@ -260,13 +264,13 @@ class TaskExecutionService:
         事件流、检查点和最终状态。
 
         注意边界：已经发出的工具调用（例如正在跑的测试或写文件）无法被
-        抢占，工作区副作用可能在 fencing 生效前最后一次落下。这里保证的是
-        "旧执行者不再写入数据库"，不是副作用恰好执行一次。
+        抢占，工作区副作用可能在校验失效前最后一次落下。
+        校验与写入仍是两个操作，存在竞争窗口，不是数据库事务级 fencing，
+        不支持自动交接；恢复前必须确认旧执行者及工具已停止。
         """
 
         sequence = self.repository.next_event_sequence(task_id)
         saw_error = False
-        fence_lost = False
         last_event_type: str | None = None
         holds_fence = self._fence_holder(fence_check)
 
@@ -275,7 +279,25 @@ class TaskExecutionService:
 
             return cancel_event.is_set() or not holds_fence()
 
+        def ensure_fence() -> None:
+            """! @brief 校验失败或存储不可达时停止执行，避免异常路径绕过校验。"""
+            try:
+                held = holds_fence()
+            except Exception as exc:
+                raise _FenceLost("无法确认任务租约") from exc
+            if not held:
+                raise _FenceLost("任务租约已失效")
+
+        def persist(event: AgentEvent) -> None:
+            ensure_fence()
+            self._persist_event(task_id, sequence, event)
+
+        def change_status(expected: set[str], status: str) -> None:
+            ensure_fence()
+            self.repository.claim_status(task_id, expected, status)
+
         try:
+            ensure_fence()
             task = self.repository.get_task(task_id)
             orchestrator = self.orchestrator_factory(
                 task,
@@ -311,7 +333,7 @@ class TaskExecutionService:
                                 "agent": agent.name,
                             },
                         )
-                        self._persist_event(task_id, sequence, restore_event)
+                        persist(restore_event)
                         sequence += 1
                     # 无论是否命中检查点都要挂上写回调，让本次运行的中间状态
                     # 持续落盘，供下一次重启后继续恢复。
@@ -324,25 +346,13 @@ class TaskExecutionService:
                 question=task.question,
                 plan=task.plan,
             ):
-                if not holds_fence():
-                    fence_lost = True
-                    cancel_event.set()
-                    logger.warning(
-                        "任务 {} 已失去租约，停止写入事件与状态", task_id
-                    )
-                    break
-                self._persist_event(task_id, sequence, event)
+                persist(event)
                 sequence += 1
                 last_event_type = event.type
                 if event.type == "error":
                     saw_error = True
                 if event.type == "cancelled" or cancel_event.is_set():
                     break
-
-            if fence_lost:
-                # 队列侧已把任务隔离为 dead 并把 tasks 标为 interrupted（或
-                # 由新持有者接管），旧执行者绝不能再去改最终状态。
-                return
 
             if cancel_event.is_set():
                 cancelled_event = AgentEvent(
@@ -352,18 +362,13 @@ class TaskExecutionService:
                 )
                 # 子 Agent 已发出 cancelled 时不再写重复事件。
                 if last_event_type != "cancelled":
-                    self._persist_event(task_id, sequence, cancelled_event)
-                self.repository.claim_status(
-                    task_id,
-                    {"running", "cancelling"},
-                    "cancelled",
-                )
+                    persist(cancelled_event)
+                change_status({"running", "cancelling"}, "cancelled")
             else:
-                self.repository.claim_status(
-                    task_id,
-                    {"running"},
-                    "failed" if saw_error else "completed",
-                )
+                change_status({"running"}, "failed" if saw_error else "completed")
+        except _FenceLost:
+            cancel_event.set()
+            logger.warning("任务 {} 已失去租约，停止写入事件与状态", task_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Task {} execution failed", task_id)
             error_event = AgentEvent(
@@ -372,12 +377,11 @@ class TaskExecutionService:
                 message=str(exc),
             )
             try:
-                self._persist_event(task_id, sequence, error_event)
-                self.repository.claim_status(
-                    task_id,
-                    {"running", "cancelling"},
-                    "failed",
-                )
+                persist(error_event)
+                change_status({"running", "cancelling"}, "failed")
+            except _FenceLost:
+                cancel_event.set()
+                logger.warning("任务 {} 的异常收尾因租约失效而停止", task_id)
             except Exception:  # noqa: BLE001
                 logger.exception("Task {} failure state could not be persisted", task_id)
         finally:

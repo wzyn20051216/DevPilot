@@ -271,3 +271,29 @@ def test_inline_thread_start_failure_restores_original_status(tmp_path, monkeypa
         service.start_inline(task.id, "awaiting_approval")
     assert repository.get_task(task.id).status == "awaiting_approval"
     assert service.running_count() == 0
+
+
+def test_fence_loss_during_exception_or_finalization_does_not_overwrite(tmp_path, monkeypatch):
+    """! @brief Agent 抛错和生成器结束两个收尾路径均不能写过期状态。"""
+    monkeypatch.setattr(connection, "DATABASE_PATH", tmp_path / "fence-tail.db")
+    connection.init_database()
+    repository = TaskRepository()
+    for throws in [False, True]:
+        task = _create_task(repository)
+        repository.claim_status(task.id, {"awaiting_approval"}, "running")
+        fence = {"held": True}
+
+        class Runner:
+            def execute_stream(self, **kwargs):
+                yield AgentEvent(type="start", agent="coder", message="start")
+                fence["held"] = False
+                if throws:
+                    raise RuntimeError("crash after lease loss")
+
+        service = TaskExecutionService(repository, lambda *args: Runner())
+        service.start(task.id, lambda: fence["held"])
+        thread = service._threads.get(task.id)
+        if thread:
+            thread.join(3)
+        assert repository.get_task(task.id).status == "running"
+        assert [event["type"] for event in repository.get_events(task.id)] == ["start"]

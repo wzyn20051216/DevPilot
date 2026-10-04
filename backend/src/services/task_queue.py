@@ -29,6 +29,7 @@ from ..database.connection import (
     begin_write,
     for_update_skip_locked,
     get_connection,
+    is_mysql,
 )
 from ..exceptions import QueueFullError
 
@@ -256,7 +257,7 @@ class SQLTaskQueue:
         with get_connection() as conn:
             row = conn.execute(
                 """
-                SELECT claimed_by, status, fence_token
+                SELECT claimed_by, status, fence_token, lease_expires_at
                 FROM task_queue
                 WHERE task_id = ?
                 """,
@@ -266,6 +267,7 @@ class SQLTaskQueue:
             return False
         return (
             row["status"] == "claimed"
+            and bool(row["lease_expires_at"] and row["lease_expires_at"] > _now_iso())
             and row["claimed_by"] == worker_id
             and int(row["fence_token"] or 0) == fence_token
         )
@@ -287,10 +289,10 @@ class SQLTaskQueue:
         with get_connection() as conn:
             begin_write(conn)
             owner = conn.execute(
-                """
-                SELECT claimed_by, status, fence_token
+                f"""
+                SELECT claimed_by, status, fence_token, lease_expires_at
                 FROM task_queue
-                WHERE task_id = ?
+                WHERE task_id = ?{' FOR UPDATE' if is_mysql() else ''}
                 """,
                 (task_id,),
             ).fetchone()
@@ -315,6 +317,8 @@ class SQLTaskQueue:
         """
 
         if owner is None or owner["status"] != "claimed":
+            return False
+        if not owner["lease_expires_at"] or owner["lease_expires_at"] <= _now_iso():
             return False
         if owner["claimed_by"] != worker_id:
             return False
@@ -342,17 +346,18 @@ class SQLTaskQueue:
         with get_connection() as conn:
             begin_write(conn)
             owner = conn.execute(
-                """
-                SELECT claimed_by, status, fence_token
+                f"""
+                SELECT claimed_by, status, fence_token, lease_expires_at
                 FROM task_queue
-                WHERE task_id = ?
+                WHERE task_id = ?{' FOR UPDATE' if is_mysql() else ''}
                 """,
                 (task_id,),
             ).fetchone()
             # 调用方给了 worker_id 就做完整持有权校验；没给则只要求仍是 claimed，
             # 保留历史调用方式（例如 API 侧只做尽力收口）。
             if worker_id is None:
-                if owner is None or owner["status"] != "claimed":
+                if (owner is None or owner["status"] != "claimed"
+                        or not owner["lease_expires_at"] or owner["lease_expires_at"] <= _now_iso()):
                     return
             elif not self._owns(owner, worker_id, fence_token):
                 return
@@ -419,40 +424,37 @@ class SQLTaskQueue:
         隔离动作会把 ``claimed_by`` 清空并置为 dead，因此旧 Worker 之后
         无论续租、结算还是写事件都会被 fencing 校验拒绝。
 
-        实现上先在只读事务里查出过期任务的 ID，再按主键精确更新。这样
-        锁只落在具体几行上；若像早期实现那样让 UPDATE 自己带扫描条件，
-        MySQL 会对扫描范围加间隙锁，与并发 claim 的锁相互等待甚至死锁。
+        在写事务内锁定已过期候选，再更新队列和任务。MySQL 跳过其它事务
+        持有的行，避免回收器等待正在续租的 Worker；持有权读则使用阻塞行锁，
+        不把正常的短暂锁竞争误判为租约丢失。
         """
         now = _now_iso()
         with get_connection() as conn:
+            begin_write(conn)
             expired = [
-                row["task_id"]
-                for row in conn.execute(
-                    """
-                    SELECT task_id FROM task_queue
-                    WHERE status = 'claimed' AND lease_expires_at < ?
-                    """,
-                    (now,),
+                row["task_id"] for row in conn.execute(
+                    f"""SELECT task_id FROM task_queue
+                    WHERE status = 'claimed' AND lease_expires_at <= ?
+                    {for_update_skip_locked()}""", (now,),
                 ).fetchall()
             ]
             if not expired:
                 return 0
+            # 锁定候选后再更新：心跳无法在候选读取和隔离之间续租。
             marks = ", ".join("?" for _ in expired)
-            begin_write(conn)
-            conn.execute(
-                f"""UPDATE tasks SET status = 'interrupted', updated_at = ?
-                WHERE status IN ('running', 'cancelling')
-                AND id IN ({marks})""",
-                (now, *expired),
-            )
             cursor = conn.execute(
                 f"""UPDATE task_queue SET status = 'dead', claimed_by = NULL,
                 lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?,
                 last_error = '租约过期：确认旧 Worker 已停止后再恢复任务'
-                WHERE task_id IN ({marks})""",
+                WHERE task_id IN ({marks})""", (now, *expired),
+            )
+            count = cursor.rowcount
+            conn.execute(
+                f"""UPDATE tasks SET status = 'interrupted', updated_at = ?
+                WHERE status IN ('running', 'cancelling') AND id IN ({marks})""",
                 (now, *expired),
             )
-            return cursor.rowcount
+            return count
 
     def get(self, task_id: str) -> QueueEntry | None:
         """! @brief 按 task_id 查询队列项。"""
@@ -547,6 +549,7 @@ class RedisTaskQueue:
     _LEASE_INDEX = "devpilot:tq:leases"
     # 全局入队序号，保证同优先级按入队先后领取（对齐 SQL 版的 id ASC）。
     _SEQUENCE = "devpilot:tq:seq"
+    _ENTRIES = "devpilot:tq:entries"
 
     _KEY_PREFIX = "devpilot:tq:"
 
@@ -560,13 +563,14 @@ class RedisTaskQueue:
         self._redis = redis.from_url(settings.redis_url, decode_responses=True)
         # 所有 mutating 操作都是一段 Lua：Redis 单线程执行脚本，因此
         # "读-判断-写"不会与其它 Worker 交错，也不会在中途崩溃时丢条目。
-        # 索引键以 KEYS 传入而非在脚本里拼接，兼容 Redis Cluster 的键槽约束。
+        # 索引键以 KEYS 传入而非在脚本里拼接，仅支持单节点或 Sentinel，不支持 Redis Cluster。
         self._lua_enqueue = self._redis.register_script(_LUA_ENQUEUE)
         self._lua_claim = self._redis.register_script(_LUA_CLAIM)
         self._lua_heartbeat = self._redis.register_script(_LUA_HEARTBEAT)
         self._lua_complete = self._redis.register_script(_LUA_COMPLETE)
         self._lua_reclaim = self._redis.register_script(_LUA_RECLAIM)
         self._lua_reset = self._redis.register_script(_LUA_RESET)
+        self._lua_remove = self._redis.register_script(_LUA_REMOVE)
 
     @staticmethod
     def _key(task_id: str) -> str:
@@ -615,7 +619,7 @@ class RedisTaskQueue:
         if max_attempts is None:
             max_attempts = settings.task_max_attempts
         result = self._lua_enqueue(
-            keys=[self._key(task_id), self._INDEX, self._SEQUENCE],
+            keys=[self._key(task_id), self._INDEX, self._SEQUENCE, self._ENTRIES],
             args=[
                 task_id,
                 idempotency_key,
@@ -705,9 +709,14 @@ class RedisTaskQueue:
         now = _now_iso()
         result = self._lua_reclaim(
             keys=[self._LEASE_INDEX, self._INDEX],
-            args=[now, _lease_score(now), self._KEY_PREFIX],
+            args=[now, datetime.fromisoformat(now).timestamp(), self._KEY_PREFIX],
         )
-        return int(result or 0)
+        from ..database.task_repository import TaskRepository
+
+        repository = TaskRepository()
+        for task_id in result or []:
+            repository.claim_status(task_id, {"running", "cancelling"}, "interrupted")
+        return len(result or [])
 
     def get(self, task_id: str) -> QueueEntry | None:
         """! @brief 按 task_id 查询队列项。"""
@@ -720,14 +729,16 @@ class RedisTaskQueue:
     def is_current(self, task_id: str, worker_id: str, fence_token: int) -> bool:
         """! @brief 判断某次领取是否仍持有该任务，语义同 SQL 版。"""
 
-        holder, status, token = self._redis.hmget(
+        holder, status, token, expiry = self._redis.hmget(
             self._key(task_id),
             "claimed_by",
             "status",
             "fence_token",
+            "lease_expires_at",
         )
         return (
             holder == worker_id
+            and bool(expiry and expiry > _now_iso())
             and status == "claimed"
             and int(token or 0) == fence_token
         )
@@ -750,34 +761,36 @@ class RedisTaskQueue:
         被反复取出又丢弃。只应在任务仍在排队时调用。
         """
 
-        pipe = self._redis.pipeline()
-        pipe.delete(self._key(task_id))
-        pipe.zrem(self._INDEX, task_id)
-        pipe.zrem(self._LEASE_INDEX, task_id)
-        return bool(pipe.execute()[0])
+        return bool(self._lua_remove(
+            keys=[self._key(task_id), self._INDEX, self._LEASE_INDEX, self._ENTRIES],
+            args=[task_id],
+        ))
 
     def stats(self) -> dict[str, int]:
         """! @brief 各状态计数，语义同 SQL 版。
 
-        只遍历索引 ZSET 的成员，不做全库 ``SCAN``；索引只保留 queued 任务，
-        其余状态直接查哈希，避免脏数据让统计整体失败。
+        只遍历本队列的全状态成员索引，不扫描整个 Redis；批量读哈希状态，
+        覆盖 queued/claimed/done/dead。并发变化时统计属于近实时快照。
         """
 
         result = {"queued": 0, "claimed": 0, "done": 0, "dead": 0}
-        for task_id in self._redis.zrange(self._INDEX, 0, -1):
-            status = self._redis.hget(self._key(task_id), "status")
+        task_ids = list(self._redis.smembers(self._ENTRIES))
+        if not task_ids:
+            return result
+        pipe = self._redis.pipeline(transaction=False)
+        for task_id in task_ids:
+            pipe.hget(self._key(task_id), "status")
+        for status in pipe.execute():
             if status in result:
                 result[status] += 1
         return result
 
 
 # --- Redis Lua 脚本 -------------------------------------------------------
-# 约定：哈希键由脚本用前缀拼出（KEYS 只带索引键），以兼容 Redis Cluster 的
-# 键槽约束——带前缀的键会落在同一槽，索引键则显式作为 KEYS 传入。
-# 分数编码 (priority + 1) * 10^10 + 入队序号：先比优先级，再比入队先后，
-# 与 SQL 版的 ``ORDER BY priority DESC, id`` 一致。
+# 脚本动态拼接哈希键，仅支持单节点/Sentinel；没有 Cluster hash tag 支持。
+# score 为 -priority * 10^10 + 入队序号，升序领取对应优先级降序、id 升序。
 _LUA_ENQUEUE = """
-local key, index, seq = KEYS[1], KEYS[2], KEYS[3]
+local key, index, seq, entries = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local task_id, idem, priority, max_attempts, now, max_depth =
     ARGV[1], ARGV[2], tonumber(ARGV[3]), tonumber(ARGV[4]), ARGV[5],
     tonumber(ARGV[6])
@@ -789,7 +802,7 @@ if max_depth and max_depth > 0 and redis.call('ZCARD', index) >= max_depth then
 end
 local seq_no = redis.call('INCR', seq)
 redis.call('HSET', key,
-    'id', '0',
+    'id', seq_no,
     'task_id', task_id,
     'idempotency_key', idem,
     'status', 'queued',
@@ -803,7 +816,8 @@ redis.call('HSET', key,
     'fence_token', '0',
     'created_at', now,
     'updated_at', now)
-redis.call('ZADD', index, (priority + 1) * 10000000000 + seq_no, task_id)
+redis.call('ZADD', index, -priority * 10000000000 + seq_no, task_id)
+redis.call('SADD', entries, task_id)
 return 1
 """
 
@@ -849,6 +863,9 @@ local worker, now, lease, lease_score, token =
 if redis.call('HGET', key, 'status') ~= 'claimed' then
     return 0
 end
+if (redis.call('HGET', key, 'lease_expires_at') or '') <= now then
+    return 0
+end
 if redis.call('HGET', key, 'claimed_by') ~= worker then
     return 0
 end
@@ -871,6 +888,9 @@ local status = redis.call('HGET', key, 'status')
 if status ~= 'claimed' then
     return 0
 end
+if (redis.call('HGET', key, 'lease_expires_at') or '') <= now then
+    return 0
+end
 if worker ~= '' then
     if redis.call('HGET', key, 'claimed_by') ~= worker then
         return 0
@@ -891,18 +911,16 @@ local attempts = tonumber(redis.call('HGET', key, 'attempts') or '0')
 local max_attempts = tonumber(redis.call('HGET', key, 'max_attempts') or '0')
 local new_status = 'dead'
 if attempts < max_attempts then
-    local depth = redis.call('ZCARD', index)
-    if not (max_depth and max_depth > 0 and depth >= max_depth) then
-        new_status = 'queued'
-    end
+    -- 深度上限控制新增与显式恢复，保留在途任务的有限重试。
+    new_status = 'queued'
 end
 redis.call('HSET', key, 'status', new_status, 'claimed_by', '',
     'lease_expires_at', '', 'heartbeat_at', '', 'last_error', err,
     'updated_at', now)
 if new_status == 'queued' then
     local priority = tonumber(redis.call('HGET', key, 'priority') or '0')
-    local seq_no = redis.call('INCR', seq)
-    redis.call('ZADD', index, (priority + 1) * 10000000000 + seq_no, task_id)
+    local seq_no = tonumber(redis.call('HGET', key, 'id'))
+    redis.call('ZADD', index, -priority * 10000000000 + seq_no, task_id)
 end
 return 1
 """
@@ -911,7 +929,7 @@ _LUA_RECLAIM = """
 local leases, index = KEYS[1], KEYS[2]
 local now, now_score, prefix = ARGV[1], ARGV[2], ARGV[3]
 local expired = redis.call('ZRANGEBYSCORE', leases, '-inf', now_score)
-local count = 0
+local reclaimed = {}
 for _, task_id in ipairs(expired) do
     local key = prefix .. task_id
     if redis.call('HGET', key, 'status') == 'claimed' then
@@ -921,11 +939,11 @@ for _, task_id in ipairs(expired) do
             'lease_expires_at', '', 'heartbeat_at', '',
             'last_error', '租约过期：确认旧 Worker 已停止后再恢复任务',
             'updated_at', now)
-        count = count + 1
+        table.insert(reclaimed, task_id)
     end
     redis.call('ZREM', leases, task_id)
 end
-return count
+return reclaimed
 """
 
 _LUA_RESET = """
@@ -942,8 +960,21 @@ local priority = tonumber(redis.call('HGET', key, 'priority') or '0')
 redis.call('HSET', key, 'idempotency_key', idem, 'status', 'queued',
     'attempts', '0', 'claimed_by', '', 'lease_expires_at', '',
     'heartbeat_at', '', 'last_error', '', 'updated_at', now)
-local seq_no = redis.call('INCR', seq)
-redis.call('ZADD', index, (priority + 1) * 10000000000 + seq_no, task_id)
+local seq_no = tonumber(redis.call('HGET', key, 'id'))
+redis.call('ZADD', index, -priority * 10000000000 + seq_no, task_id)
+return 1
+"""
+
+
+_LUA_REMOVE = """
+local key, index, leases, entries = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
+if redis.call('HGET', key, 'status') ~= 'queued' then
+    return 0
+end
+redis.call('DEL', key)
+redis.call('ZREM', index, ARGV[1])
+redis.call('ZREM', leases, ARGV[1])
+redis.call('SREM', entries, ARGV[1])
 return 1
 """
 

@@ -60,24 +60,14 @@ def _worker_runner_factory(task, cancel_check: Callable[[], bool]):
 
 
 def make_fence_check(queue, task_id: str, worker_id: str, fence_token: int):
-    """! @brief 构造带短缓存的租约校验回调，供执行服务在写盘前调用。
-
-    执行服务每个事件都会问一次"我还持有这个任务吗"，直接查库会让写事件
-    的开销翻倍。缓存 1 秒的判定结果：失去租约的执行者最多多写 1 秒的
-    事件，但正常情况下数据库压力可忽略。
-
-    @return 无参谓词，True 表示仍持有租约。
-    """
-
-    state = {"checked_at": 0.0, "held": True}
+    """! @brief 每次查询持有权，不缓存授权结果，校验错误按失效处理。"""
 
     def check() -> bool:
-        now = time.monotonic()
-        if now - state["checked_at"] < 1.0:
-            return bool(state["held"])
-        state["held"] = queue.is_current(task_id, worker_id, fence_token)
-        state["checked_at"] = now
-        return bool(state["held"])
+        try:
+            return queue.is_current(task_id, worker_id, fence_token)
+        except Exception:  # noqa: BLE001
+            logger.warning("任务 {} 无法确认租约，停止执行", task_id)
+            return False
 
     return check
 

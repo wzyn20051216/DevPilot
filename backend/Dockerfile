@@ -13,7 +13,7 @@ RUN apt-get update \
     && pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --extra mysql --extra redis
 
 COPY backend ./backend
 
