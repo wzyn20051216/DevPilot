@@ -77,6 +77,7 @@ class CodeIndex:
         ) = None
     def build(
         self,
+        *, chunk_lines: int = 80, overlap: int = 15, python_strategy: str = "ast",
     ) -> dict[str, int]:
         """! @brief 构建并持久化代码仓库索引。
 
@@ -89,7 +90,8 @@ class CodeIndex:
 
         chunks = (
             chunk_repository(
-                str(self.repo)
+                str(self.repo), chunk_lines=chunk_lines, overlap=overlap,
+                python_strategy=python_strategy,
             )
         )
 
@@ -134,6 +136,8 @@ class CodeIndex:
                     "source_sha256": calculate_source_fingerprint(self.repo),
                     "chunks": len(chunks),
                     "dimensions": int(vectors.shape[1]),
+                    "chunking": {"chunk_lines": chunk_lines, "overlap": overlap,
+                                 "python_strategy": python_strategy},
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -314,6 +318,7 @@ class CodeIndex:
         self,
         query: str,
         top_k: int = 8,
+        *, candidate_k: int = 20, rrf_k: int = 60, vector_weight: float = 0.5,
     ) -> list[
         dict[str, object]
     ]:
@@ -324,25 +329,32 @@ class CodeIndex:
 
         @param query 用户输入的检索问题。
         @param top_k 最终返回的结果数量。
+        @param candidate_k 每路候选数量，默认保持既有前 20 项。
+        @param rrf_k RRF 平滑常数。
+        @param vector_weight 向量路权重；0/1 分别用于纯 BM25/向量消融。
         @return 包含文件路径、符号、行号、分数和内容的结果列表。
         """
 
+        if top_k <= 0 or candidate_k <= 0 or rrf_k <= 0:
+            raise ValueError("top_k、candidate_k 和 rrf_k 必须为正数")
+        if not 0 <= vector_weight <= 1:
+            raise ValueError("vector_weight 必须位于 [0, 1]")
         if not self.chunks:
             self.load()
 
         vector_results = (
             self.vector_search(
                 query,
-                top_k=20,
+                top_k=candidate_k,
             )
-        )
+        ) if vector_weight > 0 else []
 
         bm25_results = (
             self.bm25_search(
                 query,
-                top_k=20,
+                top_k=candidate_k,
             )
-        )
+        ) if vector_weight < 1 else []
 
         scores: dict[
             int,
@@ -350,7 +362,7 @@ class CodeIndex:
         ] = {}
 
         # RRF 的平滑常数。数值越大，排名差异对最终分数的影响越温和。
-        k = 60
+        k = rrf_k
 
         # RRF 只使用“名次”而不直接相加两种原始分数，因为向量相似度与
         # BM25 分数不在同一量纲。某个 chunk 两边都靠前时会自然累加得分。
@@ -361,13 +373,14 @@ class CodeIndex:
             vector_results,
             start=1,
         ):
-
+            if vector_weight == 0:
+                continue
             scores[index] = (
                 scores.get(
                     index,
                     0.0,
                 )
-                + 1.0 / (k + rank)
+                + (2 * vector_weight) / (k + rank)
             )
 
         for rank, (
@@ -377,13 +390,14 @@ class CodeIndex:
             bm25_results,
             start=1,
         ):
-
+            if vector_weight == 1:
+                continue
             scores[index] = (
                 scores.get(
                     index,
                     0.0,
                 )
-                + 1.0 / (k + rank)
+                + (2 * (1 - vector_weight)) / (k + rank)
             )
 
         # scores.items() 形如 (chunk_index, rrf_score)，先按融合分数降序。

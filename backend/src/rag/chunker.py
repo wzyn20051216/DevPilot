@@ -70,6 +70,8 @@ def make_chunk_id(
 def chunk_python_file(
     repo: Path,
     path: Path,
+    chunk_lines: int = 80,
+    overlap: int = 15,
 ) -> list[CodeChunk]:
     """把一个 Python 文件按顶层「函数 / 异步函数 / 类」切成多个 CodeChunk。
 
@@ -96,7 +98,7 @@ def chunk_python_file(
         tree = ast.parse(text)
     except SyntaxError:
         # 语法解析失败时降级到通用文本切块（保证索引仍能产生一些 chunk）。
-        return chunk_text_file(repo, path)
+        return chunk_text_file(repo, path, chunk_lines, overlap)
     chunks: list[CodeChunk] = []
 
     for node in tree.body:
@@ -130,7 +132,7 @@ def chunk_python_file(
     # for 跑完了还没找到任何「函数 / 类」节点时（如纯脚本只有 import 和语句），
     # 降级到通用文本切块，保证索引至少能产出一些 chunk。
     if not chunks:
-        return chunk_text_file(repo, path)
+        return chunk_text_file(repo, path, chunk_lines, overlap)
     return chunks
 
 
@@ -161,6 +163,8 @@ def chunk_text_file(
         list[CodeChunk]: 切出的代码块列表。文本块没有「符号」概念，
             故 `symbol` 保持默认 None，`embedding_text` 改用「文件名 + 行号区间」定位。
     """
+    if chunk_lines <= 0 or not 0 <= overlap < chunk_lines:
+        raise ValueError("chunk_lines 必须为正数，overlap 必须位于 [0, chunk_lines)")
     text = path.read_text(encoding="utf-8", errors="ignore")
     relative = path.relative_to(repo).as_posix()
     # 取后缀作为 language 标记（去掉点号，如 ".py"→"py"）；无后缀则回退 "text"。
@@ -269,20 +273,30 @@ def calculate_source_fingerprint(repo_path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def chunk_repository(repo_path:str)->list[CodeChunk]:
+def chunk_repository(
+    repo_path: str, *, chunk_lines: int = 80, overlap: int = 15,
+    python_strategy: str = "ast",
+) -> list[CodeChunk]:
     """! @brief 遍历仓库并把可支持的源码文件汇总为代码块。
 
     @param repo_path 仓库根目录。
+    @param chunk_lines 文本窗口行数，默认保持原行为。
+    @param overlap 相邻文本窗口重叠行数。
+    @param python_strategy ast 使用语法分块；window 用于分块消融。
     @return 所有成功读取并切分的 CodeChunk；单个文件失败不会中断全仓索引。
     """
+    if chunk_lines <= 0 or not 0 <= overlap < chunk_lines:
+        raise ValueError("chunk_lines 必须为正数，overlap 必须位于 [0, chunk_lines)")
+    if python_strategy not in {"ast", "window"}:
+        raise ValueError("python_strategy 必须为 ast 或 window")
     repo=Path(repo_path).resolve()
     chunks:list[CodeChunk]=[]
     for path in iter_indexable_files(repo):
         try:
-            if (path.suffix.lower()==".py"):
-                file_chunks=(chunk_python_file(repo,path))
+            if path.suffix.lower() == ".py" and python_strategy == "ast":
+                file_chunks = chunk_python_file(repo, path, chunk_lines, overlap)
             else:
-                file_chunks=(chunk_text_file(repo,path))
+                file_chunks = chunk_text_file(repo, path, chunk_lines, overlap)
         except Exception:
             # 索引面向整个仓库：单个文件编码异常或临时不可读时选择跳过，
             # 保留其它文件的检索能力。需要诊断时应在上层增加日志记录。
