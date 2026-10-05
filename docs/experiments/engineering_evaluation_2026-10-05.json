@@ -375,5 +375,13 @@
     "document_links_valid": true,
     "live_query_quality_matches_grid": true,
     "paid_calls_this_evaluation": 0
+  },
+  "cancellation_gap_follow_up": {
+    "status": "fixed_and_verified",
+    "report": "cancellation_fix_2026-10-05.json",
+    "task_status": "cancelled",
+    "queue_status": "dead",
+    "full_backend_tests_passed": 234,
+    "original_observation_preserved": true
   }
 }

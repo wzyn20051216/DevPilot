@@ -88,6 +88,7 @@ $env:MYSQL_URL = "mysql://devpilot:replace-password@127.0.0.1:3306/devpilot"
 1. `/plan` 保存 awaiting_approval；批准后 `/execute` 入队或启动 inline 线程。数据库状态迁移防止重复执行。
 2. 领取自增 attempts 和 fence_token；心跳、结算检查 owner、token 和未过期租约。失败按最大尝试次数有限重试，次数耗尽进入 dead。
 3. API 重启不改变独立 Worker 的运行状态。取消 running 任务只置 cancelling，由 Worker 在安全点触发取消；取消 queued 任务不会删除已经领取的租约。
+   Worker 观察到业务任务 cancelled 后按不可重试结果收口：队列进入 dead，记录“任务已取消”，清空 owner/租约，保留业务 cancelled 状态；不会把取消计为成功或回流 queued。单次 Worker、持续 Worker 和领取时遇到已取消任务采用相同规则，仍受 owner/token/租约校验约束。队列 dead 包含取消终止，不能直接当作业务失败数。
 4. 到期租约隔离为 dead，运行任务置 interrupted，**不自动交接**。SQL 在同一事务中更新队列和任务；Redis 的 Lua 隔离与 SQL 业务状态更新是两个操作，跨存储故障仍需要运维核对。
 5. 确认旧 Worker 与工具停止、检查 Diff 后，显式 `/resume`。角色消息恢复后重新进入编排流程，工具可能重放。
 6. Worker 接受 SIGINT/SIGTERM；停止领取后继续续租并等待在途任务结束；超过退出期限时仍需检查残留工具/沙箱。

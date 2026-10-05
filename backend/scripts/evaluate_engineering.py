@@ -340,6 +340,9 @@ def main():
         worker.wait(timeout=90)
         assert repo.get_task(cancelled.id).status == "cancelled"
         assert len([e for e in repo.get_events(cancelled.id) if e["type"] == "cancelled"]) == 1
+        assert queue.get(cancelled.id).status == "dead"
+        assert queue.get(cancelled.id).attempts == 1
+        assert queue.claim("after-cancellation") is None
         report["reliability"].append({"scenario": "cross_process_api_cancel", "passed": True,
                                      "cancel_to_worker_exit_seconds": time.monotonic() - cancel_started,
                                      "queue_status_after_cancel": queue.get(cancelled.id).status,

@@ -408,6 +408,105 @@ def test_remove_does_not_delete_claimed_task(queue_backend):
     assert queue.is_current(task_id, "worker", entry.fence_token)
 
 
+@pytest.mark.parametrize("worker_mode", ["once", "settle", "cancel_race"])
+def test_worker_cancellation_is_terminal_without_extra_claims(queue_backend, monkeypatch, worker_mode):
+    """! @brief 三后端：真实执行线程取消、循环收尾及领取竞争均只消费一次。"""
+    import time
+    from backend.src.models.agent_state import AgentEvent
+    from backend.src.services.task_execution_service import TaskExecutionService
+    from backend.src.worker import _settle_running, make_fence_check, run_worker_once
+
+    queue, repo, _ = queue_backend
+    monkeypatch.setattr(settings, "task_worker_poll_seconds", 0.01)
+    task_id = _new_task(repo, f"cancel-{worker_mode}")
+    queue.enqueue(task_id, "cancel")
+    entered = threading.Event()
+    calls = []
+
+    class WaitingRunner:
+        def __init__(self, task, cancel_check):
+            self.cancel_check = cancel_check
+
+        def execute_stream(self, **kwargs):
+            calls.append(task_id)
+            entered.set()
+            yield AgentEvent(type="start", agent="coder", message="start")
+            deadline = time.monotonic() + 5
+            while not self.cancel_check() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            yield AgentEvent(type="cancelled", agent="coder", message="cancelled")
+
+    service = TaskExecutionService(repo, WaitingRunner)
+    errors = []
+    consumer = None
+    inflight = {}
+
+    def consume():
+        """! @brief 把线程异常传回父测试，避免静默漏掉 Worker 失败。"""
+        try:
+            assert run_worker_once(queue, service, "worker")
+        except Exception as exc:
+            errors.append(exc)
+
+    try:
+        if worker_mode == "cancel_race":
+            # 模拟 API 已提交取消，但领取竞争使队列条目未能被移除。
+            repo.set_status(task_id, "cancelled")
+            assert run_worker_once(queue, service, "worker")
+        else:
+            if worker_mode == "once":
+                consumer = threading.Thread(target=consume)
+                consumer.start()
+            else:
+                entry = queue.claim("worker")
+                assert repo.claim_status(task_id, {"awaiting_approval"}, "running")
+                inflight[task_id] = entry.fence_token
+                service.start(task_id, make_fence_check(queue, task_id, "worker", entry.fence_token))
+            assert entered.wait(3)
+            assert repo.claim_status(task_id, {"running"}, "cancelling")
+            assert service.cancel(task_id)
+            if consumer:
+                consumer.join(3)
+                assert not consumer.is_alive() and not errors
+            else:
+                deadline = time.monotonic() + 3
+                while service.is_running(task_id) and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                assert not service.is_running(task_id)
+                _settle_running(queue, service, inflight, threading.Lock(), "worker")
+                assert not inflight
+        assert repo.get_task(task_id).status == "cancelled"
+        entry = queue.get(task_id)
+        assert entry.status == "dead" and entry.attempts == 1
+        assert entry.last_error == "任务已取消"
+        assert entry.claimed_by is None and entry.lease_expires_at is None
+        assert queue.stats()["queued"] == 0 and queue.stats()["claimed"] == 0
+        assert queue.claim("another-worker") is None
+        assert queue.get(task_id).attempts == 1
+        assert len(calls) == (0 if worker_mode == "cancel_race" else 1)
+    finally:
+        service.cancel(task_id)
+        if consumer:
+            consumer.join(5)
+
+
+@pytest.mark.parametrize("invalid_owner", ["worker", "token", "expired"])
+def test_nonretryable_completion_still_requires_valid_ownership(queue_backend, invalid_owner):
+    """! @brief 不可重试收尾不得绕过 owner/token/租约 fencing 检查。"""
+    queue, repo, expire = queue_backend
+    task_id = _new_task(repo, "cancel-fence")
+    queue.enqueue(task_id, "cancel-fence")
+    entry = queue.claim("owner")
+    repo.set_status(task_id, "cancelled")
+    if invalid_owner == "expired":
+        expire(task_id)
+    queue.complete(task_id, False, error="任务已取消", retryable=False,
+                   worker_id="wrong" if invalid_owner == "worker" else "owner",
+                   fence_token=entry.fence_token + (1 if invalid_owner == "token" else 0))
+    assert queue.get(task_id).status == "claimed"
+    assert repo.get_task(task_id).status == "cancelled"
+
+
 @pytest.mark.skipif(not MYSQL_URL, reason="未配置 TEST_MYSQL_URL")
 def test_mysql_api_queue_worker_sse_end_to_end(tmp_path, monkeypatch):
     """! @brief 真实 MySQL 上 API 入队→独立 Worker→持久事件→SSE 完整链路。"""

@@ -1,0 +1,61 @@
+{
+  "date": "2026-10-05",
+  "status": "completed",
+  "paid_model_calls": 0,
+  "change": "取消不可重试：业务cancelled、队列dead，保留owner/token/租约校验",
+  "native_process_verification": [
+    {
+      "worker_mode": "once",
+      "task_status": "cancelled",
+      "queue_status": "dead",
+      "attempts": 1,
+      "start_events": 1,
+      "cancelled_events": 1,
+      "extra_claims": 0,
+      "normal_task_status": "completed",
+      "normal_queue_status": "done",
+      "cancel_to_terminal_seconds": 0.8940335000515915,
+      "passed": true
+    },
+    {
+      "worker_mode": "continuous",
+      "task_status": "cancelled",
+      "queue_status": "dead",
+      "attempts": 1,
+      "start_events": 1,
+      "cancelled_events": 1,
+      "extra_claims": 0,
+      "normal_task_status": "completed",
+      "normal_queue_status": "done",
+      "cancel_to_terminal_seconds": 0.9499294999986887,
+      "passed": true
+    }
+  ],
+  "targeted_tests": {
+    "tests": 62,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "passed": 62
+  },
+  "full_backend_regression": {
+    "tests": 234,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "passed": 234
+  },
+  "new_backend_cases": 18,
+  "backends_tested": [
+    "sqlite",
+    "mysql",
+    "redis"
+  ],
+  "source_sha256": {
+    "backend/src/worker.py": "1974312d63633b4d1ab5c8259f5be3b8d5742ec8b426d21ece2d66dc7f158c3b",
+    "backend/src/services/task_queue.py": "4035337eb9688886457f7e65ab2643567a346d3d142e8bc72ada1b13177c0e44",
+    "backend/tests/integration/test_queue_backends.py": "15a5732bb3aea7332594718fee90f23edc4d958fd10fd159c164a79a109e7859",
+    "backend/scripts/verify_worker_cancellation.py": "3060f41058ae7f08c952cc4f0162fae5df24870d133929b0f55ff652349b4fa7"
+  },
+  "scope": "真实localhost HTTP与独立Worker；可控运行器不调用模型；不代表抢占工具副作用或事务级fencing"
+}

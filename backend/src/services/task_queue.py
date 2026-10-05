@@ -334,6 +334,7 @@ class SQLTaskQueue:
         *,
         worker_id: str | None = None,
         fence_token: int | None = None,
+        retryable: bool = True,
     ) -> None:
         """! @brief 任务执行结束后的队列收口。
 
@@ -341,6 +342,8 @@ class SQLTaskQueue:
         （清空领取字段、保留 last_error 供排查），已达上限进 dead（死信）。
         持有者或令牌不匹配时直接返回，保证已被回收的任务不会被旧 Worker
         覆盖成 done。
+        @param retryable False 表示取消等不可重试结果，立即进入 dead 终态；
+        业务任务仍保留 cancelled，不将取消伪报为成功。
         """
         now = _now_iso()
         with get_connection() as conn:
@@ -384,7 +387,7 @@ class SQLTaskQueue:
             ).fetchone()
             if row is None:
                 return
-            if int(row["attempts"]) < int(row["max_attempts"]):
+            if retryable and int(row["attempts"]) < int(row["max_attempts"]):
                 conn.execute(
                     """
                     UPDATE task_queue
@@ -678,8 +681,9 @@ class RedisTaskQueue:
         *,
         worker_id: str | None = None,
         fence_token: int | None = None,
+        retryable: bool = True,
     ) -> None:
-        """! @brief 队列收口，语义同 SQL 版。"""
+        """! @brief 队列收口，语义同 SQL 版；不可重试结果直接进 dead。"""
 
         token = -1 if fence_token is None else fence_token
         self._lua_complete(
@@ -696,6 +700,7 @@ class RedisTaskQueue:
                 _now_iso(),
                 token,
                 settings.task_queue_max_depth,
+                1 if retryable else 0,
             ],
         )
 
@@ -884,6 +889,7 @@ local key, index, leases, seq = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local worker, succeeded, err, now, token, max_depth =
     ARGV[1], tonumber(ARGV[2]), ARGV[3], ARGV[4], tonumber(ARGV[5]),
     tonumber(ARGV[6])
+local retryable = tonumber(ARGV[7])
 local status = redis.call('HGET', key, 'status')
 if status ~= 'claimed' then
     return 0
@@ -910,7 +916,7 @@ end
 local attempts = tonumber(redis.call('HGET', key, 'attempts') or '0')
 local max_attempts = tonumber(redis.call('HGET', key, 'max_attempts') or '0')
 local new_status = 'dead'
-if attempts < max_attempts then
+if retryable ~= 0 and attempts < max_attempts then
     -- 深度上限控制新增与显式恢复，保留在途任务的有限重试。
     new_status = 'queued'
 end

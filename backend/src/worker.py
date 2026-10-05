@@ -89,18 +89,20 @@ def run_worker_once(
     task_id = entry.task_id
     # 队列侧已领取，还要在 tasks 表里做一次原子状态迁移，防止同一任务被
     # API 与 Worker、或多个 Worker 重复执行。迁移失败说明任务状态已变
-    # （例如已 running/cancelled），此时归还队列，交给 attempts 上限兜底。
+    # cancelled 为不可重试终态；其它不允许执行的状态仍由 attempts 上限兜底。
     if not service.repository.claim_status(
         task_id,
         {"awaiting_approval", "interrupted"} | ({"failed"} if entry.attempts > 1 else set()),
         "running",
     ):
+        cancelled = service.repository.get_task(task_id).status == "cancelled"
         queue.complete(
             task_id,
             succeeded=False,
-            error="任务状态不允许执行",
+            error="任务已取消" if cancelled else "任务状态不允许执行",
             worker_id=worker_id,
             fence_token=entry.fence_token,
+            retryable=not cancelled,
         )
         return True
 
@@ -119,8 +121,10 @@ def run_worker_once(
     queue.complete(
         task_id,
         succeeded=status == "completed",
+        error="任务已取消" if status == "cancelled" else None,
         worker_id=worker_id,
         fence_token=entry.fence_token,
+        retryable=status != "cancelled",
     )
     return True
 
@@ -158,8 +162,10 @@ def _settle_running(
             queue.complete(
                 task_id,
                 succeeded=status == "completed",
+                error="任务已取消" if status == "cancelled" else None,
                 worker_id=worker_id,
                 fence_token=fence_token,
+                retryable=status != "cancelled",
             )
         except Exception:  # noqa: BLE001
             logger.exception("结算任务 {} 状态失败", task_id)
@@ -264,12 +270,14 @@ def main() -> None:
                 {"awaiting_approval", "interrupted"} | ({"failed"} if entry.attempts > 1 else set()),
                 "running",
             ):
+                cancelled = service.repository.get_task(task_id).status == "cancelled"
                 queue.complete(
                     task_id,
                     succeeded=False,
-                    error="任务状态不允许执行",
+                    error="任务已取消" if cancelled else "任务状态不允许执行",
                     worker_id=worker_id,
                     fence_token=entry.fence_token,
+                    retryable=not cancelled,
                 )
                 continue
             with lock:

@@ -328,7 +328,7 @@ docker run --rm --mount "type=bind,source=E:/desktop/DevPilot/backend/data,targe
 
 真实 localhost HTTP 的任务详情读取与 50ms 可控运行器执行共 3,312 次测量请求，响应与内容错误均为零。读取并发 32 时约 221.77 请求/秒、P95 242.23ms；执行链 Worker 并发 1/2/4 吞吐分别约 6.95/8.24/11.70 任务/秒，增长不线性，且并发 2 的一轮延迟明显波动。指标包含 API/Worker 完整进程树的 CPU 和工作集；不是 LLM 修复吞吐或生产容量承诺。
 
-真实进程 kill 后约 30 秒隔离，确认旧 Worker 停止后显式恢复成功；有界重试、跨进程取消、本地真实 HTTP 的 429/401/超时探针通过。取消后业务状态正确但队列仍暂留 queued，是待修复的收尾缺口。真实 Docker 安全探针发现超时后容器残留，已改为唯一名称定向清理并复测零残留。最终后端 216/216（含真实 MySQL/Redis、无跳过）、前端 8 项与构建通过；本轮没有付费模型请求。
+真实进程 kill 后约 30 秒隔离，确认旧 Worker 停止后显式恢复成功；有界重试、跨进程取消、本地真实 HTTP 的 429/401/超时探针通过。原批次取消后业务状态正确但队列暂留 queued 的缺口，随后已[修复并复测](experiments/cancellation_fix_2026-10-05.md)：取消任务不可重试，业务 cancelled、队列 dead，原始实验保留。真实 Docker 安全探针发现超时后容器残留，已改为唯一名称定向清理并复测零残留。该工程批次后端 216/216（含真实 MySQL/Redis、无跳过）、前端 8 项与构建通过；本轮没有付费模型请求。
 
 完整参数、逐轮资源、已发现问题和复现方法见 [四项工程报告](experiments/engineering_evaluation_2026-10-05.md)，机器摘要见 [JSON](experiments/engineering_evaluation_2026-10-05.json)。这些新结果不改变前一轮真实 Issue 的独立修复率持平结论。
 
