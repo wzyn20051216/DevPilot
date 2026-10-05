@@ -1,4 +1,4 @@
-[1 page] DevPilot 技术知识库  
+[1 page] DevPilot 技术知识库
 [1361 text] 面向 AI 应用／Agent 开发学习、项目答辩与面试复盘。 本文基于截至 2026-10-05 的仓库代码与真实实验；所有成功率与性能数据均注明样本、判分口径与限制，不夸大、不泛化。
 [1359 text] 阅读建议
 [1358 bullet] 第一次读：按「一 → 四 → 五 → 七」建立全局认识。
@@ -609,4 +609,4 @@ docker compose ps
 [834 text] ⚠️ 脚本位置：评测执行与分析代码在 research/evals/；参数与工程评估工具在 research/scripts/（如 evaluate_rag_parameters.py、paired_real_world.py）。运行代码不导入 research 包。
 [835 text] 最可靠的项目介绍方式，是同时给出代码、复现命令、原始报告和失败案例。DevPilot 的价值不在于声称 Agent 已经无所不能，而在于建立了一套可以持续验证和改进 Agent 的工程闭环。
 [831 text] 本文档基于 2026-10-05 的仓库代码与发布结果包。数据口径、样本范围与限制均已标注，请勿脱离上下文引用。
-[830 text] 
+[830 text]
