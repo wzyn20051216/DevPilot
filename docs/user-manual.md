@@ -70,6 +70,8 @@ TASK_QUEUE_BACKEND=inline
 
 `LLM_API_KEY` 用于后端访问模型，`API_KEYS` 用于用户访问 DevPilot，两者用途不同。`API_KEYS` 可配置多个逗号分隔的凭据；仓库白名单限制任务能操作的目录。
 
+上述示例使用 SQLite 保存业务记录，并在 API 进程内执行任务，不使用 Redis。填写 `MYSQL_URL` 或 `REDIS_URL` 只提供连接地址；实际使用哪个存储、队列由 `DATABASE_BACKEND` 和 `TASK_QUEUE_BACKEND` 分别决定。启动 MySQL、Redis 容器也不会自动切换这两个配置。
+
 ### 3 构建运行镜像
 
 ```powershell
@@ -154,6 +156,36 @@ docker compose --profile worker up -d backend frontend worker
 
 SQL 队列随状态库使用 SQLite 或 MySQL；Redis 队列通过 Lua 管理领取和租约。API 与 Worker 应使用一致的存储、目录和凭据配置。SQLite 采用单机 Linux 数据卷；共享数据库部署可选择 MySQL。
 
+状态库负责保存任务历史，队列负责安排任务执行，两者可以分别选择：
+
+| `DATABASE_BACKEND` | `TASK_QUEUE_BACKEND` | 业务记录写入位置 | 排队与执行方式 |
+|---|---|---|---|
+| `sqlite` | `inline` | SQLite 文件 | API 进程内执行，不使用 Redis 或独立 Worker；默认配置 |
+| `sqlite` | `sqlite` | SQLite 文件 | 队列写入同一 SQLite 的 `task_queue` 表，由 Worker 执行 |
+| `sqlite` | `redis` | SQLite 文件 | 队列写入 Redis，由 Worker 执行 |
+| `mysql` | `inline` | MySQL 数据库 | API 进程内执行，不使用 Redis 或独立 Worker |
+| `mysql` | `sqlite` | MySQL 数据库 | 队列写入同一 MySQL 的 `task_queue` 表，由 Worker 执行 |
+| `mysql` | `redis` | MySQL 数据库 | 队列写入 Redis，由 Worker 执行 |
+
+配置名 `TASK_QUEUE_BACKEND=sqlite` 是 SQL 队列的历史命名，其底层数据库跟随 `DATABASE_BACKEND`，不表示一定写入 SQLite。选择 `redis` 时，Redis 保存排队、领取、租约、心跳及重试等队列信息；任务历史、计划、事件、工具记录和检查点仍写入所选状态库。
+
+例如保留 SQLite、启用 Redis 队列，在 `backend/.env` 设置：
+
+```dotenv
+DATABASE_BACKEND=sqlite
+TASK_QUEUE_BACKEND=redis
+REDIS_URL=redis://redis:6379/0
+```
+
+然后在项目根目录启动 Redis，并重建应用容器使其读取新配置：
+
+```powershell
+docker compose --profile redis up -d --wait redis
+docker compose --profile redis --profile worker up -d --wait --force-recreate backend frontend worker
+```
+
+MySQL + Redis 的完整配置见 [部署指南](deployment.md#mysql-与-redis)。切换存储或队列前先停止接收新任务，并等待在途任务结束；已有业务历史和队列记录不会自动迁移。
+
 任务队列设置租约、心跳、领取令牌、有限重试及容量控制。容量不足时返回可重试的拒绝响应；取消记录不会消耗重复领取次数。连接与并发参数的完整配置见部署指南。
 
 ## 十 访问与执行安全
@@ -168,12 +200,21 @@ SQL 队列随状态库使用 SQLite 或 MySQL；Redis 队列通过 Lua 管理领
 
 任务、计划、事件、工具记录和检查点保存在状态库。Docker 默认使用命名数据卷；重建运行容器不会主动删除这些数据。备份或迁移前停止写入任务，按部署指南执行并核对记录数量。
 
+| 存储 | 具体写入位置 |
+|---|---|
+| Docker 默认 SQLite | 容器内 `/app/backend/data/devpilot.db`，保存在 Compose 命名卷 `devpilot_data` 中；默认项目名下为 `devpilot_devpilot_data` |
+| 本地开发默认 SQLite | 项目目录 `backend/data/devpilot.db`；本机为 `E:\desktop\DevPilot\backend\data\devpilot.db`，可由 `DATABASE_PATH` 修改 |
+| MySQL | `MYSQL_URL` 指定的数据库；Compose 示例为 `mysql:3306/devpilot`，数据保存在命名卷 `devpilot_mysql` 中 |
+| Redis 队列 | `REDIS_URL` 指定的 Redis 数据库；Compose 示例使用数据库 `0`、键前缀 `devpilot:tq:`，持久化数据保存在命名卷 `devpilot_redis` 中 |
+
+Docker 中的 SQLite 命名卷与宿主机 `backend/data/devpilot.db` 是两个独立存储位置。命名卷的实际前缀由 Compose 项目名决定。仅配置 Redis 不会把 SQLite 或 MySQL 的任务历史搬到 Redis；备份 Redis 队列也不能替代状态库备份。
+
 ```powershell
 docker compose logs --tail 100 backend
 docker compose ps
 ```
 
-调整配置后重建或重启相应服务。清理容器时保留需要的命名卷；只有明确准备移除数据时才使用带卷删除的命令。
+修改 `.env` 后重新创建相应 API/Worker 容器，使其读取新配置；仅重启旧容器不会更新启动时注入的环境变量。清理容器时保留需要的命名卷；只有明确准备移除数据时才使用带卷删除的命令。
 
 常见操作提示：401 时检查应用 Key，422 时检查仓库路径或请求参数，429 时等待容量释放后重试。模型服务返回额度或限流提示时，检查模型账户及服务配置；恢复执行前先检查任务与工作区状态。
 

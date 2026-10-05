@@ -25,6 +25,30 @@
 | `RAG_MODE` | `manual` 或按特征选择的 `auto` |
 | `GITHUB_PERSONAL_ACCESS_TOKEN` | GitHub 访问与发布 |
 
+## 业务记录与队列写入位置
+
+`DATABASE_BACKEND` 选择业务状态库，保存任务、计划、事件、工具记录、发布预览和检查点；`TASK_QUEUE_BACKEND` 独立选择任务的排队与执行方式。
+
+| `DATABASE_BACKEND` | `TASK_QUEUE_BACKEND` | 业务记录 | 队列与执行 |
+|---|---|---|---|
+| `sqlite` | `inline` | SQLite 文件 | API 进程内执行，不使用 Redis；默认配置 |
+| `sqlite` | `sqlite` | SQLite 文件 | 同一 SQLite 的 `task_queue` 表，独立 Worker 执行 |
+| `sqlite` | `redis` | SQLite 文件 | Redis 队列，独立 Worker 执行 |
+| `mysql` | `inline` | MySQL | API 进程内执行，不使用 Redis |
+| `mysql` | `sqlite` | MySQL | 同一 MySQL 的 `task_queue` 表，独立 Worker 执行 |
+| `mysql` | `redis` | MySQL | Redis 队列，独立 Worker 执行 |
+
+`TASK_QUEUE_BACKEND=sqlite` 是 SQL 队列的历史命名，底层跟随 `DATABASE_BACKEND`，也可以使用 MySQL。Redis 保存排队、领取、租约、心跳和重试等队列信息；业务历史仍保存在 SQLite 或 MySQL。
+
+具体位置：
+
+- Docker 默认 SQLite：`/app/backend/data/devpilot.db`，位于命名卷 `devpilot_data`，默认项目名下为 `devpilot_devpilot_data`。
+- 本地默认 SQLite：项目目录 `backend/data/devpilot.db`；本机为 `E:\desktop\DevPilot\backend\data\devpilot.db`，可由 `DATABASE_PATH` 修改。该文件与 Docker 命名卷内数据库相互独立。
+- MySQL：由 `MYSQL_URL` 指定；Compose 示例为 `mysql:3306/devpilot`，数据保存在命名卷 `devpilot_mysql`。
+- Redis：由 `REDIS_URL` 指定；Compose 示例为数据库 `0`、键前缀 `devpilot:tq:`，持久化数据保存在命名卷 `devpilot_redis`。
+
+命名卷实际前缀由 Compose 项目名决定。仅填写连接地址、密码或启动存储容器不会切换写入位置；必须修改对应后端配置，并重建 API/Worker 容器使其读取新配置。切换前停止接收新任务并等待在途任务结束；旧业务历史和队列记录不会自动迁移，也不会自动删除。
+
 ## 运行镜像
 
 | 镜像 | 用途 |
@@ -54,7 +78,14 @@ SQL 队列可使用 SQLite 或 MySQL。Redis 模式还需配置 `REDIS_URL`。�
 
 ## MySQL 与 Redis
 
-根 `.env` 设置数据库初始化密码，服务 `.env` 设置：
+根 `.env` 设置数据库初始化密码，保留已有工作区等配置：
+
+```dotenv
+DEVPILOT_MYSQL_ROOT_PASSWORD=填写数据库管理员密码
+DEVPILOT_MYSQL_PASSWORD=填写应用连接密码
+```
+
+然后在 `backend/.env` 设置下面四项。应用连接密码必须与根 `.env` 一致；连接串中的特殊字符需要 URL 编码。API 与 Worker 共用该文件：
 
 ```dotenv
 DATABASE_BACKEND=mysql
@@ -65,10 +96,19 @@ REDIS_URL=redis://redis:6379/0
 
 ```powershell
 docker compose --profile mysql --profile redis up -d --wait mysql redis
-docker compose --profile mysql --profile redis --profile worker up -d backend frontend worker
+docker compose --profile mysql --profile redis --profile worker up -d --wait --force-recreate backend frontend worker
 ```
 
 数据库与 Redis 默认不暴露宿主机端口。SQLite 使用单机数据卷；多个主机共享状态时使用共享数据库及一致的工作区映射。
+
+只需要 SQLite + Redis 时，保留 `DATABASE_BACKEND=sqlite`，设置 `TASK_QUEUE_BACKEND=redis` 和 `REDIS_URL=redis://redis:6379/0`，再执行：
+
+```powershell
+docker compose --profile redis up -d --wait redis
+docker compose --profile redis --profile worker up -d --wait --force-recreate backend frontend worker
+```
+
+任务历史仍写入 SQLite，Redis 仅管理任务队列。只使用 MySQL + `inline` 时则不需要 Redis 或独立 Worker。
 
 ## 数据迁移与备份
 
