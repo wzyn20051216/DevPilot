@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Any, Iterator
+from uuid import uuid4
 
 from ..config import settings
 
@@ -146,9 +147,13 @@ def run_in_sandbox(
         script = " && ".join(profile.command_prefix) + " && exec " + shlex.join(argv)
         container_argv = ["/bin/bash", "-lc", script]
 
+    # 超时杀死 docker CLI 不会自动停止容器；使用本次独有名称做定向清理。
+    container_name = f"devpilot-sandbox-{uuid4().hex}"
     command = [
         "docker",
         "run",
+        "--name",
+        container_name,
 
         # 容器退出后立刻删除（不留垃圾镜像/容器）。
         "--rm",
@@ -206,13 +211,28 @@ def run_in_sandbox(
             shell=False,   # shell=False：不要走 shell 解释，避免命令注入
         )
     except subprocess.TimeoutExpired:
+        cleaned = False
+        try:
+            cleanup = subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=10, shell=False,
+            )
+            cleaned = cleanup.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            # Docker 不可达时明确返回未确认清理，不能伪称容器已经终止。
+            pass
         # 超时也算一种"结果"返回给调用方，不要 raise 出去炸掉 agent 的循环。
         return {
             "argv": argv,
             "returncode": None,
             "timed_out": True,
             "stdout": "",
-            "stderr": f"Sandbox 执行超过 {timeout} 秒，已终止",
+            "stderr": f"Sandbox 执行超过 {timeout} 秒，" + (
+                "容器已移除" if cleaned else f"容器清理未确认：{container_name}"
+            ),
+            "container_name": container_name,
+            "container_cleanup_confirmed": cleaned,
         }
 
     # 正常返回。stdout/stderr 截断到 20k/10k 字符，避免一个超长输出

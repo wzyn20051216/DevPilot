@@ -515,6 +515,26 @@ def test_sandbox_timeout_is_returned_as_structured_result(
     assert "超过 1 秒" in result["stderr"]
 
 
+@pytest.mark.parametrize("cleanup_returncode", [0, 1])
+def test_sandbox_timeout_cleans_only_its_named_container(tmp_path, monkeypatch, cleanup_returncode):
+    """! @brief 超时应删除本次容器；清理失败不得报告已终止。"""
+    commands = []
+    monkeypatch.setattr(docker_runner.shutil, "which", lambda _: "docker")
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        if command[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(command, 1)
+        return subprocess.CompletedProcess(command, cleanup_returncode, "", "")
+
+    monkeypatch.setattr(docker_runner.subprocess, "run", execute)
+    result = docker_runner.run_in_sandbox(str(tmp_path), ["python", "-c", "pass"], timeout=1)
+    container_name = commands[0][commands[0].index("--name") + 1]
+    assert commands[1] == ["docker", "rm", "-f", container_name]
+    assert result["container_cleanup_confirmed"] is (cleanup_returncode == 0)
+    assert ("清理未确认" in result["stderr"]) is (cleanup_returncode != 0)
+
+
 def test_trusted_sandbox_profile_is_scoped_and_quotes_argv(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

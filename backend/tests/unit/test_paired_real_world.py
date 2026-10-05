@@ -61,6 +61,9 @@ def test_resume_retries_provider_interruption_and_preserves_original_trace(monke
 
     env_file = tmp_path / ".env"
     env_file.write_text("LLM_API_KEY=test-key\nLLM_MODEL=test-model\n", encoding="utf-8")
+    # 环境变量优先于 .env；隔离宿主的空值或真实凭据，保证用例只使用假配置。
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
     (tmp_path / "swebench_datasets").mkdir()
     (tmp_path / "swebench_datasets/verified.json").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(config, "settings", config.Settings(_env_file=env_file))

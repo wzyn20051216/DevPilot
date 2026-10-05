@@ -322,6 +322,16 @@ docker run --rm --mount "type=bind,source=E:/desktop/DevPilot/backend/data,targe
 
 十六次新运行合计 2,975,576 Token。此前 402 余额中断的 3,213 Token 单独保存、不计修复率；所有完整失败均保留。已核对补丁哈希、固定源码与公共 CSV/JSON 数值；没有追加排除失败节点。这里仍是文件级独立 verifier，不能作为官方 harness 的 resolved 成绩。配置、环境校准、限制与本机复核命令见 [完整配对报告](experiments/paired_verified_2026-10-05.md)、[十二次主实验 CSV](experiments/paired_verified_2026-10-05.csv) 和 [四次诊断 CSV](experiments/flash16_diagnostic_2026-10-05.csv)。
 
+## 四项工程评估（2026-10-05）
+
+本轮新增本项目 81 文件源码上的 32 条人工查询，按 development/validation 各 16 条划分，完成 720 组分块、重叠、top_k、候选数及 RRF/融合权重对照。开发集选定 80 行窗口、无重叠、top_k=5、candidate_k=20、RRF=10、等权融合；validation Recall@5 从默认配置的 68.75% 到 84.38%，MRR 从 0.4604 到 0.6615，上下文字符数减少 47.65%。真实温查询平均耗时从 37.25ms 到 40.40ms，没有速度收益。验证标注与开发标注目标文件重合，且补网格前已看过早期结果，属于开发评估；不作为盲测或跨仓库泛化结论，未修改产品默认配置。
+
+真实 localhost HTTP 的任务详情读取与 50ms 可控运行器执行共 3,312 次测量请求，响应与内容错误均为零。读取并发 32 时约 221.77 请求/秒、P95 242.23ms；执行链 Worker 并发 1/2/4 吞吐分别约 6.95/8.24/11.70 任务/秒，增长不线性，且并发 2 的一轮延迟明显波动。指标包含 API/Worker 完整进程树的 CPU 和工作集；不是 LLM 修复吞吐或生产容量承诺。
+
+真实进程 kill 后约 30 秒隔离，确认旧 Worker 停止后显式恢复成功；有界重试、跨进程取消、本地真实 HTTP 的 429/401/超时探针通过。取消后业务状态正确但队列仍暂留 queued，是待修复的收尾缺口。真实 Docker 安全探针发现超时后容器残留，已改为唯一名称定向清理并复测零残留。最终后端 216/216（含真实 MySQL/Redis、无跳过）、前端 8 项与构建通过；本轮没有付费模型请求。
+
+完整参数、逐轮资源、已发现问题和复现方法见 [四项工程报告](experiments/engineering_evaluation_2026-10-05.md)，机器摘要见 [JSON](experiments/engineering_evaluation_2026-10-05.json)。这些新结果不改变前一轮真实 Issue 的独立修复率持平结论。
+
 ## 动态策略执行链修复与单题确认（2026-10-05）
 
 本次让内核保存失败 reproducer 并在编辑后自动原样重跑，修复全量测试通过后仍缺验证却被关闭工具的收尾死锁；补齐普通缺陷的复现提示、行为关键词优先级与末段测试安排。后端回归为 **201 passed、15 skipped、0 failures**。
