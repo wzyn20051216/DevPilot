@@ -1,0 +1,124 @@
+{
+  "date": "2026-10-06",
+  "url": "https://dcn4btp2pzsc.feishu.cn/wiki/TLjZwYvmRivtOZk0nvkcuXEBnJg",
+  "verified_after_page_reload": true,
+  "pending_unsaved_changes": false,
+  "original_block_count": 532,
+  "final_block_count": 552,
+  "original_blocks_preserved": true,
+  "headings_preserved": 72,
+  "body_paragraphs_revised": 76,
+  "original_text_blocks_changed": 86,
+  "images_inserted": 10,
+  "image_captions_adjacent": true,
+  "placeholders_remaining": 0,
+  "stray_slash_commands": 0,
+  "backend": {
+    "passed": 242,
+    "skipped": 27,
+    "failed": 0,
+    "external_services_configured": false
+  },
+  "frontend": {
+    "tests_passed": 8,
+    "production_build_passed": true
+  },
+  "frozen_real_issue_counts": {
+    "runs": 18,
+    "correct": 14,
+    "workflow_compliant": 11,
+    "full_success": 10
+  },
+  "images": [
+    {
+      "file": "07-hybrid-rag.png",
+      "width": 1448,
+      "height": 1086,
+      "sha256": "fe4d7c5ff77ed794ec790f2eae4a97fe6f4fa2cd9bf18949a1bbad1b106e509f",
+      "server_image_saved": true,
+      "caption": "图 7｜Hybrid Code RAG：源码索引、两路召回、加权 RRF 与文件去重",
+      "record_id": "GYgddjkt6of7BYxX0ZUcNMIYn8g"
+    },
+    {
+      "file": "08-context-compression.png",
+      "width": 1448,
+      "height": 1086,
+      "sha256": "31774e1a250eac6b2aeeb9a593a9a943b98da197522585f2256027c0eeedcb30",
+      "server_image_saved": true,
+      "caption": "图 8｜上下文压缩：程序摘要、精确观测去重与工具回合配对",
+      "record_id": "GCv3dYqvfoVupCx3KwzcfZmNn7c"
+    },
+    {
+      "file": "03-local-sequence.png",
+      "width": 1448,
+      "height": 1086,
+      "sha256": "17c35b053cdaad2b86e4c892de9e17819103fdeceb829d14d5ff682f61d3186b",
+      "server_image_saved": true,
+      "caption": "图 3｜默认 inline 任务时序：计划、审批、后台执行与持久化 SSE",
+      "record_id": "MBB1dihVUou4c9xqqF6c4uZan6f"
+    },
+    {
+      "file": "01-architecture.png",
+      "width": 1086,
+      "height": 1448,
+      "sha256": "f45afdfaddf17bf142bf1d09c183e64244ad4690c50417ca8c6d4a592089c22d",
+      "server_image_saved": true,
+      "caption": "图 1｜总体架构：四角色串行、默认 inline 与可选 Worker 路径",
+      "record_id": "A6NxdSb88oK0ohx4by6cICcNnid"
+    },
+    {
+      "file": "02-task-states.png",
+      "width": 1086,
+      "height": 1448,
+      "sha256": "4e0d99ca2d843bf4de7e100f7dfe0efa2cbd64af5bdd7244dfacc2185f3ce219",
+      "server_image_saved": true,
+      "caption": "图 2｜任务状态机：七种状态与逐项迁移条件",
+      "record_id": "A4i7dgym6oFs6Hx1iEccYpBsnUg"
+    },
+    {
+      "file": "04-security.png",
+      "width": 1086,
+      "height": 1448,
+      "sha256": "9505d9360aa550cf1b0d885339b5696f5836c95ba39a93146aa5580648e1ee37",
+      "server_image_saved": true,
+      "caption": "图 4｜纵深防御：角色权限、路径校验与 Docker 执行边界",
+      "record_id": "IqEadIhymoCFUuxye2VcNGIynHd"
+    },
+    {
+      "file": "09-backpressure-fencing.png",
+      "width": 1086,
+      "height": 1448,
+      "sha256": "105e4c20af9fcd45caf17d3f68d4a4b423c09ccd921b405e2be6894f2a5a32e0",
+      "server_image_saved": true,
+      "caption": "图 9｜背压与 fencing：容量、租约校验、失租隔离及副作用边界",
+      "record_id": "PFxMdaCsool4U6xuzv6csssDnoh"
+    },
+    {
+      "file": "05-evaluation-layers.png",
+      "width": 1086,
+      "height": 1448,
+      "sha256": "050e3404578c83809fa494b6e0e2eaf72cd67661fda3e2f11881d31fb0df11be",
+      "server_image_saved": true,
+      "caption": "图 5｜三层评测：合成基线、组件检索与真实缺陷分别验收",
+      "record_id": "GRN9dZnvCowbT7xP1n4cBGgAnLB"
+    },
+    {
+      "file": "06-real-issue-results.png",
+      "width": 1448,
+      "height": 1086,
+      "sha256": "73bce4cc643a2a21a00f55a57b31849ecb942c36b1a0eb7ac904abf4b5b23e80",
+      "server_image_saved": true,
+      "caption": "图 6｜冻结真实缺陷结果：14/18 独立测试通过，10/18 流程完整成功",
+      "record_id": "HKmfds4hFoHes8xGDfjcQZqHnhc"
+    },
+    {
+      "file": "10-storage-queue-matrix.png",
+      "width": 1448,
+      "height": 1086,
+      "sha256": "8c1a23d760af76bbc11f73459f6d57be6fdfefe6d9a715ff82160011d3af485b",
+      "server_image_saved": true,
+      "caption": "图 10｜业务存储 × 执行队列：六种组合与实际写入位置",
+      "record_id": "ZAb8del9Ro28d6xJ1BccOXdHnid"
+    }
+  ]
+}
