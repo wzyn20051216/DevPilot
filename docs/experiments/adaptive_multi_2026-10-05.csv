@@ -1,0 +1,19 @@
+﻿instance_id,repeat_index,tests_passed,workflow_compliant,finalized,end_to_end_success,total_tokens,iterations,elapsed_seconds,patch_sha256,error
+astropy__astropy-13579,1,True,False,False,False,430323,16,558.735191,5c14523340d1673e71f2cde539ff7af2835eaa94b19a86665f0d3beb03a381b3,agent 达到最大迭代次数且工作流契约未满足：缺少修改后同一 reproducer 的通过结果；最近一次 run_test 未通过
+astropy__astropy-13977,1,False,True,True,False,165000,13,188.876933,61967855b0d635ce5e829531dd4294002fd690dd2a6d1d8c6c7bc2af0c38ab57,
+pydata__xarray-6744,1,True,True,True,True,164863,13,245.480176,e75675e9de00f85c4952dd9cf5bab1fb8f20e6d25b6f4652fb7f16f8d769eadf,
+pylint-dev__pylint-4970,1,False,False,False,False,141114,16,157.878624,317fbd6dfb6be29db236755815fbc9eb001f6f51c25e042b772e1450b95ef221,agent 达到最大迭代次数且工作流契约未满足：缺少修改后同一 reproducer 的通过结果
+pytest-dev__pytest-5631,1,True,True,True,True,51164,7,49.61187,728595d95457fc01e52c42233556b7bd0bb7f681378248c45656c8656cf38de1,
+scikit-learn__scikit-learn-26323,1,True,False,False,False,144390,16,114.251093,dbf960f79f1a1f1885e8a9eec97da4ddd2dfe055c04f7f140e815969380ed301,agent 达到最大迭代次数且工作流契约未满足：缺少修改后同一 reproducer 的通过结果
+astropy__astropy-13579,2,True,True,True,True,241484,15,182.189145,d81303ba246dc313a740686380555995b12fdf61ae9a8643c5ee0dc984aa0be3,
+astropy__astropy-13977,2,True,False,False,False,299716,16,312.315623,6ba24d608aa06c6604c8ccbf7115b20849cf590a059c7b3c6bffda9cd6660cfa,agent 达到最大迭代次数且工作流契约未满足：缺少修改后同一 reproducer 的通过结果
+pydata__xarray-6744,2,True,True,True,True,95545,11,153.963672,6742368ab5bd49d1426578229132b661696b7343f23597cf6ac03e9e899969f7,
+pylint-dev__pylint-4970,2,False,False,False,False,226766,16,252.58979,e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855,agent 达到最大迭代次数且工作流契约未满足：尚未产生代码修改 | Agent 未生成候选补丁
+pytest-dev__pytest-5631,2,True,True,True,True,69375,8,65.021166,b5f38c8ebd12afdeae59fa02f15fdaf3f5d1f883b29c53d6949ed2e948ec990c,
+scikit-learn__scikit-learn-26323,2,True,True,True,True,106165,10,98.186705,09a66089c52ae5edbae8d69c763c6c2bfcf6edf7cf54dd700618aafd1cff0dd5,
+mwaskom__seaborn-3187,1,False,False,False,False,247486,16,392.132348,072aa8fab1227a5621a365c7799bd9bc537a2a05c2d4a07fc83577fdc6bc5935,agent 达到最大迭代次数且工作流契约未满足：缺少修改后同一 reproducer 的通过结果
+pallets__flask-5014,1,True,True,True,True,30912,7,25.993337,165c0d5aca96068ddb66053d70b8a51a70edd79f8087216d290d41fdf6bb9300,
+sphinx-doc__sphinx-7454,1,True,True,True,True,343132,16,468.526513,8af1b0c5b75a458a5ff189512e663c90dfde786d236c565f6ed9ac4da4e0fe58,
+mwaskom__seaborn-3187,2,True,False,False,False,246382,16,385.232263,520f5b3c68404dac6577e17ed9aee2d7eb847485c581e1d30dd1f3851fd60c73,agent 达到最大迭代次数且工作流契约未满足：缺少修改后同一 reproducer 的通过结果
+pallets__flask-5014,2,True,True,True,True,63226,13,41.593546,165c0d5aca96068ddb66053d70b8a51a70edd79f8087216d290d41fdf6bb9300,
+sphinx-doc__sphinx-7454,2,True,True,True,True,169687,16,119.297332,12cba1474b0c24f8ccc754bddd176ecbd2ea32469579254aab65d8a917de7ab1,
