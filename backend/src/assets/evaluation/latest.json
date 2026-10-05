@@ -1,0 +1,122 @@
+{
+  "run_id": "adaptive_multi_20261005",
+  "run_ids": [
+    "adaptive_multi_20261005",
+    "adaptive_multi_20261005_cache_repaired"
+  ],
+  "summary": {
+    "single_adaptive": {
+      "runs": 18,
+      "success_rate": 0.5555555555555556,
+      "test_pass_rate": 0.7777777777777778,
+      "avg_tool_calls": 21.11111111111111,
+      "avg_iterations": 13.38888888888889,
+      "avg_repair_rounds": 0,
+      "avg_elapsed_seconds": 211.7708515,
+      "avg_total_tokens": 179818.33333333334,
+      "avg_llm_seconds": 114.23969561111112,
+      "avg_tool_seconds": 95.69317161111111,
+      "avg_estimated_cost": 0
+    }
+  },
+  "counts": {
+    "completed_model_runs": 18,
+    "correct_repairs": 14,
+    "workflow_compliant": 11,
+    "end_to_end_success": 10,
+    "total_tokens": 3236730,
+    "mean_agent_seconds": 211.7708515,
+    "correctness_rate": 0.7777777777777778,
+    "end_to_end_rate": 0.5555555555555556,
+    "valid_instances": 9,
+    "instances_with_all_repeats_completed": 9,
+    "instances_correct_on_all_repeats": 6,
+    "instances_correct_at_least_once": 8,
+    "instances_end_to_end_on_all_repeats": 4
+  },
+  "per_instance": [
+    {
+      "instance_id": "astropy__astropy-13579",
+      "calibrated": true,
+      "runs": 2,
+      "correct": 2,
+      "compliant": 1,
+      "end_to_end": 1
+    },
+    {
+      "instance_id": "astropy__astropy-13977",
+      "calibrated": true,
+      "runs": 2,
+      "correct": 1,
+      "compliant": 1,
+      "end_to_end": 0
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-20676",
+      "calibrated": false,
+      "runs": 0,
+      "correct": 0,
+      "compliant": 0,
+      "end_to_end": 0
+    },
+    {
+      "instance_id": "mwaskom__seaborn-3187",
+      "calibrated": true,
+      "runs": 2,
+      "correct": 1,
+      "compliant": 0,
+      "end_to_end": 0
+    },
+    {
+      "instance_id": "pallets__flask-5014",
+      "calibrated": true,
+      "runs": 2,
+      "correct": 2,
+      "compliant": 2,
+      "end_to_end": 2
+    },
+    {
+      "instance_id": "pydata__xarray-6744",
+      "calibrated": true,
+      "runs": 2,
+      "correct": 2,
+      "compliant": 2,
+      "end_to_end": 2
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4970",
+      "calibrated": true,
+      "runs": 2,
+      "correct": 0,
+      "compliant": 0,
+      "end_to_end": 0
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5631",
+      "calibrated": true,
+      "runs": 2,
+      "correct": 2,
+      "compliant": 2,
+      "end_to_end": 2
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "calibrated": true,
+      "runs": 2,
+      "correct": 2,
+      "compliant": 1,
+      "end_to_end": 1
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7454",
+      "calibrated": true,
+      "runs": 2,
+      "correct": 2,
+      "compliant": 2,
+      "end_to_end": 2
+    }
+  ],
+  "difficulty_summary": [],
+  "ablation_report": [],
+  "scope": "SWE-bench Verified 本项目文件级独立裁判，9道有效题各2次。"
+}

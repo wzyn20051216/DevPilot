@@ -1,0 +1,8 @@
+{
+  "result_directory": "research/results/latest",
+  "real_issue_run_id": "adaptive_multi_20261005",
+  "real_issue_runs": 18,
+  "correct_repairs": 14,
+  "end_to_end_success": 10,
+  "runtime_snapshot": "backend/src/assets/evaluation/latest.json"
+}

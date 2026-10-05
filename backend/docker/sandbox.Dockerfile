@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS python
 #不生成`.pyc`字节码缓存文件，容器里不需要缓存，减少垃圾文件。
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -29,7 +29,7 @@ CMD ["python", "--version"]
 # 所以 Node/JDK/tsx 必须在【构建期】全部安装进镜像，运行期不需要任何网络，
 # 风险面与 Python 沙箱完全一致。
 # ---------------------------------------------------------------------------
-FROM devpilot-sandbox:py312 AS polyglot
+FROM python AS polyglot
 
 USER root
 

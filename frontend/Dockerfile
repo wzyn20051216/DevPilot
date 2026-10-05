@@ -6,7 +6,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-ARG VITE_DEFAULT_REPO_PATH=/workspace/devpilot-test-repo
+ARG VITE_DEFAULT_REPO_PATH=
 ENV VITE_DEFAULT_REPO_PATH=${VITE_DEFAULT_REPO_PATH}
 RUN npm run build
 

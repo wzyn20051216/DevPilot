@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    UV_NO_CACHE=1
 
 WORKDIR /app
 
@@ -15,7 +16,8 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project --extra mysql --extra redis
 
-COPY backend ./backend
+COPY backend/src ./backend/src
+COPY backend/scripts ./backend/scripts
 
 EXPOSE 8000
 

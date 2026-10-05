@@ -1,8 +1,0 @@
-﻿run_id,instance_id,variant,repeat_index,success,tests_passed,total_tokens,elapsed_seconds,tool_calls,excluded_unstable_tests
-64475892baa647a7878ed43a81eed865,marshmallow-code__marshmallow-1343,single_no_rag,1,True,True,116116,84.0741,16,[]
-64475892baa647a7878ed43a81eed865,marshmallow-code__marshmallow-1359,single_no_rag,1,True,True,58640,52.837931,14,[]
-64475892baa647a7878ed43a81eed865,pydicom__pydicom-1139,single_no_rag,1,False,False,120125,96.613016,23,"['pydicom/tests/test_valuerep.py::TestBadValueRead::test_read_bad_value_in_VR_default', 'pydicom/tests/test_valuerep.py::TestBadValueRead::test_read_bad_value_in_VR_enforce_valid_value']"
-64475892baa647a7878ed43a81eed865,pydicom__pydicom-1256,single_no_rag,1,True,True,140643,102.249538,19,[]
-64475892baa647a7878ed43a81eed865,pydicom__pydicom-1694,single_no_rag,1,True,True,101446,91.65253,21,[]
-64475892baa647a7878ed43a81eed865,pylint-dev__astroid-1196,single_no_rag,1,False,False,142779,76.326735,19,[]
-64475892baa647a7878ed43a81eed865,pylint-dev__astroid-1268,single_no_rag,1,False,False,123347,128.30619,25,[]

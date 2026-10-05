@@ -315,7 +315,6 @@ source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "loguru" },
-    { name = "matplotlib" },
     { name = "mcp" },
     { name = "numpy" },
     { name = "openai" },
@@ -323,7 +322,6 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "rank-bm25" },
-    { name = "scipy" },
     { name = "sentence-transformers" },
     { name = "torch", version = "2.14.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.14.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
@@ -346,12 +344,15 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "redis" },
 ]
+research = [
+    { name = "matplotlib" },
+    { name = "scipy" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "matplotlib", specifier = ">=3.11.2" },
     { name = "mcp", specifier = ">=2.2.0" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "openai", specifier = ">=3.6.0" },
@@ -361,7 +362,6 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5" },
-    { name = "scipy", specifier = ">=1.18.1" },
     { name = "sentence-transformers", specifier = ">=6.0.1" },
     { name = "torch", specifier = ">=2.14.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.4" },
@@ -375,6 +375,10 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "redis", specifier = ">=5" },
+]
+research = [
+    { name = "matplotlib", specifier = ">=3.11.2" },
+    { name = "scipy", specifier = ">=1.18.1" },
 ]
 
 [[package]]

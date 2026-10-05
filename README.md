@@ -1,133 +1,49 @@
 # DevPilot
 
-DevPilot 是一个面向真实代码仓库的多智能体软件工程平台。它将 Planner、Coder、Tester 和 Reviewer 串成带人工审批的研发流程，并通过 Hybrid Code RAG、MCP、Docker Sandbox、SQLite/MySQL Tracing 和评测框架提供可观测、可复现的执行过程。
+DevPilot 是面向代码仓库的智能研发协作平台，提供需求分析、计划审批、代码修改、隔离验证、差异审查和 GitHub Draft PR 发布。支持单 Agent 与多角色执行，使用持久化任务、SSE 事件和工具轨迹记录整个过程。
 
-系统化学习项目设计、核心实现与实验结论，请阅读 [`docs/technical-handbook.md`](docs/technical-handbook.md)。
+使用说明见 [用户说明书](docs/user-manual.md)，部署配置见 [部署指南](docs/deployment.md)，开发与验证见 [开发指南](docs/development.md)。
 
-![DevPilot 工作台](output/playwright/level18-completed.png)
+## 功能
 
-## Features
+- 本地需求与 GitHub Issue 导入，执行前审批计划。
+- 代码检索、结构导航、行为复现、源码修改和隔离测试。
+- AST/窗口分块、BM25 与向量融合检索，以及动态工具策略。
+- 单 Agent 和 Planner/Coder/Tester/Reviewer 多角色执行。
+- 任务取消、检查点恢复、SSE 断线续传和持久化事件。
+- API Key、仓库目录授权、角色工具权限和 Docker 沙箱资源限制。
+- API/Worker 分离，SQLite/MySQL 状态存储和 SQL/Redis 队列。
+- Diff、测试与评审结果、发布预览和 Draft PR 确认。
+- 已发布最终评测结果页面。
 
-- 单 Agent 默认执行，以及 Planner / Coder / Tester / Reviewer 多智能体对照模式
-- 本地任务与 GitHub Issue 双入口
-- 计划审批和 GitHub 发布二次确认
-- Hybrid Code RAG、AST 分块、BM25 与向量检索；支持按仓库规模与查询歧义动态启用（`RAG_MODE=auto`）
-- 动态 Agent 策略路由：按仓库语言占比、目标文件规模和问题语义选择 `code_outline` 与强制探针
-- 运行时协议探针工具（`protocol_probe`）：引导模型在沙箱内验证迭代器、异常边界与兼容行为
-- 工具观测去重与摘要、Prompt Cache 命中统计，持续压低长任务 Token 成本
-- 上下文断点恢复：服务重启后 resume 优先恢复中断前的模型上下文；恢复消息后编排流程仍会重新进入，工具可能重放
-- MCP Repository / GitHub 工具发现与调用
-- Docker 隔离测试、角色工具权限和路径边界校验
-- 持久化任务队列与独立 Sandbox Worker（`TASK_QUEUE_BACKEND=sqlite|redis`，租约 / 心跳 / 幂等 / 令牌校验 / 背压），状态可选 SQLite/MySQL，支持 API 与执行分离部署
-- 后台执行、协作式取消、重启恢复、SSE 断线续传与 SQLite Trace
-- 彩色 Diff、测试报告、Review 结论和 Draft PR Preview
-- 四种 Agent 架构的 Benchmark、Ablation 和 Evaluation Dashboard，覆盖 TypeScript / Java 与跨文件大型 Issue
+## Docker 启动
 
-## Architecture
-
-```mermaid
-flowchart LR
-    User --> UI[Vue Frontend]
-    UI --> API[FastAPI]
-    API --> Dispatch[inline 或队列 Worker]
-    Dispatch --> Single[Single Developer 默认]
-    Dispatch --> Orchestrator[多角色可选]
-    Single --> Tools
-    Orchestrator --> Planner
-    Orchestrator --> Coder
-    Orchestrator --> Tester
-    Orchestrator --> Reviewer
-    Planner --> RAG[Hybrid Code RAG]
-    Coder --> RAG
-    RAG --> Vector[Embedding Search]
-    RAG --> BM25
-    Coder --> Tools[Local Tools]
-    Tester --> Sandbox[Docker Sandbox]
-    Tools --> MCP[MCP Providers]
-    MCP --> Repository
-    MCP --> GitHub
-    API --> SQLite
-    SQLite --> Trace[Agent Tracing]
-    SQLite --> Eval[Evaluation]
-```
-
-## Agent Workflow
-
-下图是可选多角色模式。默认 `single_no_rag` 在计划批准后由一个 Single Developer 完成阅读、修改和测试，不经过独立 Tester/Reviewer。
-
-```mermaid
-flowchart LR
-    Input[Local Task / GitHub Issue] --> Plan[Planner]
-    Plan --> Approval{Human Approval}
-    Approval -->|Approve| Coder
-    Approval -->|Reject| Stop[Stop]
-    Coder --> Tester
-    Tester -->|Failed| Repair[Coder Repair]
-    Repair --> Tester
-    Tester -->|Passed| Reviewer
-    Reviewer --> Results[Diff / Test / Review]
-    Results --> Preview[PR Preview]
-    Preview --> Publish{Publish Approval}
-    Publish -->|Approve| PR[GitHub Draft PR]
-```
-
-## Safety
-
-业务 API 支持 API Key 与仓库根目录白名单；production 无 Key 拒绝启动。当前没有多租户隔离，仍需完成多机故障验收。`completed` 表示执行流程正常结束，不等于独立测试通过；只有评测器的 verifier 有独立判分。生产限制及本次核查见 [项目复核](docs/project-review.md)。
-
-- API 校验授权根目录与符号链接，历史任务在执行/发布前再次授权；文件工具拒绝 `../` 路径逃逸。
-- 前端 axios 与 SSE 携带 Key，401 提示输入，验证后由用户重新发起操作。
-- Agent 按角色获得工具白名单，Tester 和 Reviewer 默认无写权限。
-- Sandbox 禁网、只读挂载仓库，并限制 CPU、内存和进程数。
-- 执行计划与 GitHub 发布均需要人工确认。
-- 发布前重新计算文件快照，审批后代码变化会阻止推送。
-- Secret 只从环境变量读取，日志不得记录 Token、API Key 或 Authorization Header。
-
-## Evaluation
-
-合成评测框架比较 `single_no_rag`、`single_rag`、`multi_no_rag` 和 `multi_rag` 四种 Variant；真实评测另保留历史 `single_enhanced` 对照，并新增 `single_adaptive` 验证动态策略。报告记录成功率、测试通过率、工具调用、迭代、耗时、Token 和修复轮数；动态变体还保存 `mode/reasons/metrics` 供事后归因。
-
-当前数据集包含 12 个可执行 case：9 个 Python 基础 case（easy / medium / hard 各 3 个），以及 3 个跨语言 / 跨文件 case（TypeScript、Java、Python 跨模块大型 Issue），用于验证 10.2.7 的跨语言能力。提交前的自动审计会确认每个 fixture 文件完整且初始 verifier 必须失败，审计结果见 [`backend/benchmarks/audit_report.json`](backend/benchmarks/audit_report.json)。TypeScript / Java 用例需要先构建 polyglot 沙箱镜像：`docker build --target polyglot -t devpilot-sandbox:polyglot -f backend/docker/sandbox.Dockerfile backend/docker`。
-
-项目还提供 SWE-bench Lite dev 真实缺陷的受控评测：首轮 3 题对照，第五轮抽样 20 题、其中 11 题通过校准并各运行 3 次，以及文件级 RAG 检索评测。真实评测使用官方实例镜像、固定 base commit、基线/金补丁校准，并排除候选测试改动。当前实测结论与限制见 [`docs/current-evaluation.md`](docs/current-evaluation.md)。
-
-第五轮自研 verifier 记录为 21/33；33 份补丁经官方 Linux SWE-bench harness 复核，为 18 resolved、12 unresolved、3 镜像启动错误。另有一题的官方金补丁也在该环境下 unresolved，因此这些数字不能作为公开榜单分数。逐次证据与复现命令见 [`docs/current-evaluation.md`](docs/current-evaluation.md)。
+安装 Docker Desktop，进入项目根目录。已有配置时保留原文件；首次启动复制模板：
 
 ```powershell
-# 不调用 LLM：审计数据集结构和初始失败状态
-uv run python -m backend.src.evals.audit
-
-# 不调用 LLM：评测文件级 RAG 的 Recall@5、MRR 与延迟
-uv run python -m backend.src.evals.retrieval --top-k 5
-
-# 调用已配置的 LLM：四组架构各重复 3 次，当前 12 × 4 × 3，共 144 次 Agent 任务
-uv run python -m backend.src.evals.runner --full --repeats 3
-
-# 调用 LLM 和 Docker：运行小规模 SWE-bench Lite 真实缺陷评测
-uv run python -m backend.src.evals.real_world
-
-# 单独评测动态策略变体
-uv run python -m backend.src.evals.real_world --variant single_adaptive
+Copy-Item .env.example .env
+Copy-Item backend/.env.example backend/.env
 ```
 
-正式实验会把 `repeat_index`、模型、参数、数据集 SHA-256、Python 版本和运行平台写入配置快照。原始结果进入 SQLite，并可导出 CSV 后再做配对统计；不要把单次 pilot 结果当成最终性能结论。
-
-## Quick Start
-
-要求：Python 3.12、[uv](https://docs.astral.sh/uv/)、Node.js 22、Git。执行 Sandbox 或 Compose 演示时还需要 Docker Desktop。
-
-### Backend
+在根 `.env` 设置 `DEVPILOT_HOST_WORKSPACE_ROOT`；在 `backend/.env` 设置模型、`API_KEYS` 和 `ALLOWED_REPO_ROOTS=/workspace`。
 
 ```powershell
-Copy-Item backend\.env.example backend\.env
-# 编辑 backend/.env，填写 LLM 与 GitHub 配置
-uv sync
+docker compose build sandbox backend frontend
+docker compose up -d backend frontend
+```
+
+访问 `http://localhost:8080`，输入 API Key。仓库填写容器内路径，例如 `/workspace/my-repository`。需要 TypeScript/Java 沙箱时执行 `docker compose build sandbox-polyglot`。
+
+## 本地开发
+
+要求 Python 3.12、uv、Node.js 22、Git；执行隔离工具还需要 Docker。
+
+```powershell
+uv sync --frozen
 uv run uvicorn backend.src.main:app --reload
 ```
 
-API 文档：<http://127.0.0.1:8000/docs>
-
-### Frontend
+另开终端启动前端：
 
 ```powershell
 Set-Location frontend
@@ -135,122 +51,32 @@ npm ci
 npm run dev
 ```
 
-工作台：<http://127.0.0.1:5173>
-
-### Tests
-
-```powershell
-uv run python -m pytest
-Set-Location frontend
-npm test
-npm run build
-```
-
-### Docker Compose
-
-```powershell
-Copy-Item .env.example .env
-Copy-Item backend\.env.example backend\.env
-# 在两个 .env 中填写宿主机工作区和服务配置；backend/.env 必须设置 API_KEYS
-# 容器内 ALLOWED_REPO_ROOTS=/workspace
-docker compose up --build
-```
-
-访问 <http://localhost:8080>。容器内仓库路径使用 `/workspace/<project>`，不要填写 Windows 的 `E:\...` 路径。SQLite 数据保存在 Docker named volume `devpilot_data` 中，重新创建容器不会删除任务历史；只有显式执行 `docker compose down -v` 才会删除该卷。
-
-## Configuration
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `APP_ENV` | `development` / `test` / `production` | `development` |
-| `LOG_LEVEL` | 应用日志级别 | `INFO` |
-| `LLM_API_KEY` | OpenAI-compatible API Key | empty |
-| `LLM_BASE_URL` | OpenAI-compatible endpoint | empty |
-| `LLM_MODEL` | 模型名称 | empty |
-| `LLM_REASONING_EFFORT` | DeepSeek 思考强度 `low` / `high` / `max`；留空沿用接口默认行为 | empty |
-| `LLM_TIMEOUT_SECONDS` | 单次 LLM 请求超时秒数 | `60` |
-| `LLM_MAX_RETRIES` | LLM 瞬时故障最大重试次数 | `2` |
-| `AGENT_TOKEN_BUDGET` | 单 Agent 累计 Token 上限；`0` 表示不限制 | `0` |
-| `TOOL_OBSERVATION_MAX_CHARS` | 进入模型上下文的单次工具观测字符上限 | `10000` |
-| `AGENT_RECENT_MESSAGES` | 上下文压缩时完整保留的最近消息数 | `12` |
-| `AGENT_HISTORY_SUMMARY_MAX_CHARS` | 旧工具回合结构化摘要的字符上限 | `6000` |
-| `AGENT_DEDUPE_OBSERVATIONS` | 工具观测去重开关（同参数同结果 / 文件未变化只回传指针） | `true` |
-| `AGENT_CHECKPOINT_ENABLED` | 是否把 Agent 消息上下文持久化到 SQLite 供 resume 恢复 | `true` |
-| `RAG_MODE` | `manual` 保持显式 execution_mode；`auto` 按仓库规模与查询歧义动态启用 RAG | `manual` |
-| `STRATEGY_ROUTER_ENABLED` | 单 Agent 是否按任务特征动态选择结构导航与强制探针 | `true` |
-| `STRATEGY_OUTLINE_MIN_LINES` | 明确目标 Python 文件启用 `code_outline` 的最小行数 | `800` |
-| `STRATEGY_OUTLINE_MIN_REPO_FILES` | 无明确文件引用时启用 `code_outline` 的最小仓库源码文件数 | `400` |
-| `STRATEGY_PYTHON_MIN_RATIO` | 启用 Python AST 结构导航所需的最小 Python 文件占比 | `0.5` |
-| `TASK_QUEUE_BACKEND` | `inline` 进程内线程；`sqlite` / `redis` 交由独立 Worker 执行 | `inline` |
-| `REDIS_URL` | `TASK_QUEUE_BACKEND=redis` 时的连接地址 | empty |
-| `TASK_WORKER_LEASE_SECONDS` / `TASK_WORKER_HEARTBEAT_SECONDS` | Worker 租约时长与心跳续租间隔 | `300` / `30` |
-| `SANDBOX_IMAGE_POLYGLOT` | TypeScript / Java 用例使用的沙箱镜像 | `devpilot-sandbox:polyglot` |
-| `LLM_PROMPT_COST_PER_MILLION` | 每百万输入 Token 成本，仅用于评测估算 | `0` |
-| `LLM_COMPLETION_COST_PER_MILLION` | 每百万输出 Token 成本，仅用于评测估算 | `0` |
-| `MCP_TIMEOUT_SECONDS` | Repository MCP 调用超时秒数 | `30` |
-| `GITHUB_PERSONAL_ACCESS_TOKEN` | GitHub MCP 凭据 | empty |
-| `DATABASE_PATH` | SQLite 文件路径 | `backend/data/devpilot.db` |
-| `DATABASE_BACKEND` / `MYSQL_URL` | SQLite 或 MySQL 8.0+ 业务状态；MySQL URL 是敏感配置 | `sqlite` / empty |
-| `MYSQL_POOL_SIZE` | 空闲 MySQL 连接复用上限（不是活动连接硬上限） | `8` |
-| `API_KEYS` | 逗号分隔的 API Key；production 必填 | empty |
-| `ALLOWED_REPO_ROOTS` | 授权仓库根目录，逗号分隔；容器填写 `/workspace` | empty |
-| `TASK_QUEUE_MAX_DEPTH` | 新入队/显式恢复的 queued 上限；0 不限制，MySQL 软上限 | `100` |
-| `TASK_WORKER_MAX_CONCURRENCY` | 每个 Worker 的并发任务数 | `2` |
-| `TASK_INLINE_MAX_RUNNING` | 单 API 进程 inline 任务上限；0 不限制 | `8` |
-| `CORS_ORIGINS` | 允许直连 FastAPI 的浏览器来源 | localhost |
-| `WORKSPACE_ROOT` | Backend 容器内工作区 | `/workspace` |
-| `HOST_WORKSPACE_ROOT` | Docker daemon 可见的宿主机工作区 | empty |
-| `VITE_API_BASE_URL` | 前端 API 地址；空值表示同源代理 | empty |
-| `VITE_DEFAULT_REPO_PATH` | 工作台默认仓库路径 | Docker: `/workspace/devpilot-test-repo` |
-
-## Core API
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/healthz` | 进程存活检查 |
-| `GET` | `/readyz` | 数据库与 Docker 能力检查 |
-| `GET` | `/api/auth/check` | 验证 API Key，不调用模型 |
-| `POST` | `/api/tasks/plan` | 生成待审批计划 |
-| `POST` | `/api/tasks/{id}/execute` | SSE 执行任务 |
-| `GET` | `/api/tasks/{id}/events?after_sequence=N` | SSE 断线续传 |
-| `POST` | `/api/tasks/{id}/cancel` | 协作式取消后台任务 |
-| `POST` | `/api/tasks/{id}/resume` | 恢复服务重启时中断的任务 |
-| `GET` | `/api/tasks/{id}` | 查询任务、事件和 Tool Calls |
-| `GET` | `/api/tasks/{id}/metrics` | 查询 Token、成本与模型/工具耗时 |
-| `GET` | `/api/tasks/{id}/diff` | 读取当前 Git Diff |
-| `POST` | `/api/github/issues/import` | 从 GitHub Issue 创建任务 |
-| `POST` | `/api/tasks/{id}/publish-preview` | 创建只读发布预览 |
-| `POST` | `/api/tasks/{id}/publish` | 人工确认后创建 Draft PR |
-| `GET` | `/api/evals/summary` | Evaluation Dashboard 汇总 |
-
-## Project Structure
+## 项目结构
 
 ```text
-DevPilot/
-├── backend/
-│   ├── src/              # API、Agent、RAG、MCP、数据与服务层
-│   ├── tests/            # unit / integration / eval tests
-│   ├── benchmarks/       # 可复现实验数据集
-│   ├── Dockerfile
-│   └── .env.example
-├── frontend/
-│   ├── src/              # Vue 工作台与 Evaluation Dashboard
-│   ├── Dockerfile
-│   └── nginx.conf
-├── .github/workflows/ci.yml
-├── docker-compose.yml
-├── pyproject.toml
-└── README.md
+backend/
+  src/              API、Agent、工具、RAG、任务与存储
+  scripts/          数据迁移等运行维护工具
+  docker/           运行沙箱镜像定义
+frontend/
+  src/              页面、组件、状态与 API 客户端
+  tests/            前端回归测试
+tests/
+  backend/          后端单元与集成测试
+  support/          隔离进程验证工具
+research/
+  evals/            独立评测执行与分析
+  benchmarks/       开发验证用例
+  scripts/          参数与工程评估工具
+  results/latest/   唯一发布结果包
+docs/               用户说明书、部署与开发指南
+deploy/             可选部署模板
 ```
 
-## Deployment Boundary
+运行镜像只打包应用代码和最终结果快照，不包含测试、实验工具、工作区或历史报告。测试与研究工具保留在独立目录，便于维护和复核。
 
-默认 Compose 会把 `/var/run/docker.sock` 挂给 Backend 以便本地演示中启动 Sandbox，这相当于给予 Backend 很高的宿主机权限，不应直接作为公网生产部署。现在提供两种强化路径（详见 [`docs/deployment.md`](docs/deployment.md)）：
+## 最终评测
 
-- **API / Worker 分离**：先在 `backend/.env` 设置 `TASK_QUEUE_BACKEND=sqlite`，再运行 `docker compose --profile worker up`；仅启用 profile 不会切换 API 执行模式。SQLite 租约过期会隔离为 dead，并将运行任务标为 interrupted；确认旧 Worker 已停止后显式恢复，不承诺自动故障切换。Redis 已使用 Lua 原子队列并通过本机集成验证，生产故障验收仍未完成。
-- **MySQL / Redis**：Compose 提供可选存储 profile；API/Worker 的配置保持一致。停机迁移脚本、配置与竞争窗口见 [部署文档](docs/deployment.md)。
-- **独立 Docker Host / K8s**：Worker 通过 `DOCKER_HOST` 连接独立 Docker daemon，API 不再持有 docker.sock；`deploy/kubernetes/` 提供 API + Worker 分离部署的示例清单，K8s Job 与 Firecracker 的演进路径同样见部署文档。
+真实缺陷评测采用 9 道有效 SWE-bench Verified Issue，每题重复 2 次，共 18 次；本项目文件级独立测试通过 **14/18（77.8%）**，流程完整成功 **10/18（55.6%）**。指标定义及逐次数据见 [最终结果包](research/results/latest/README.md)，页面直接读取同一发布批次。
 
-## License
-
-当前仓库尚未声明开源许可证。正式公开发布前需要由项目所有者选择并添加合适的 `LICENSE`。
+RAG、服务负载及取消验证的最后结果也集中在该目录，不再混用历史批次。Git 中保留代码版本记录，项目目录内仅发布最后结果。

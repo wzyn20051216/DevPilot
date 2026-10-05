@@ -283,23 +283,29 @@ def readiness_check() -> JSONResponse:
 def get_eval_summary(run_id: str | None = None):
     """! @brief 返回 Evaluation Dashboard 的聚合指标。
 
-    @param run_id 可选实验批次 ID；不传时汇总数据库中的全部实验。
-    @return 按四种 variant 分组的成功率、工具、迭代、耗时和 Token 指标。
+    @param run_id 已发布的实验批次 ID；不传时读取最终结果。
+    @return 按执行策略分组的质量、工具调用、耗时和 Token 指标。
     """
 
-    return evaluation_service.summary(run_id=run_id)
+    try:
+        return evaluation_service.summary(run_id=run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/evals/difficulty")
 def get_eval_difficulty_summary(run_id: str | None = None):
-    """! @brief 按 easy/medium/hard 和 variant 返回正式实验汇总。"""
+    """! @brief 返回发布快照中已有的难度分组。"""
 
-    return evaluation_service.difficulty_summary(run_id=run_id)
+    try:
+        return evaluation_service.difficulty_summary(run_id=run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/evals/ablation")
 def get_eval_ablation_report(run_id: str | None = None):
-    """! @brief 返回 RAG 与多 Agent 的配对消融、置信区间和 p 值。"""
+    """! @brief 返回发布快照中已有的同批配对统计。"""
 
     try:
         return evaluation_service.ablation_report(run_id=run_id)

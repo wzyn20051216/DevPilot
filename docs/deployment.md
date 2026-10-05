@@ -1,123 +1,94 @@
-# DevPilot 部署、鉴权与任务队列
+# DevPilot 部署指南
 
-面向开发与运维：本文用于本地启动、API/Worker 分离及状态迁移。已验证 SQLite、MySQL 8.4、Redis 7 的本机集成链路；真实多主机、网络分区和远端沙箱验收仍未完成。
+默认部署使用一个 API、一个前端和按需启动的沙箱。API/Worker 分离、MySQL、Redis 是可选配置。各进程应共享模型配置、访问凭据和仓库授权范围。
 
-## 配置与构建
+## 配置文件
 
-业务服务配置统一写入 `backend/.env`，API 与 Worker 必须使用相同的数据库、队列、密钥及仓库根目录配置。Compose 根目录 `.env` 只管理宿主机工作区与可选 MySQL 容器密码。
+根 `.env` 配置 `DEVPILOT_HOST_WORKSPACE_ROOT`；`backend/.env` 配置服务。已有文件时保留凭据，首次部署按模板创建。
 
-```powershell
-uv sync --frozen --extra mysql --extra redis
-Copy-Item backend/.env.example backend/.env
-# 编辑 backend/.env；production 必须设置 API_KEYS。
-.venv/Scripts/python.exe -m uvicorn backend.src.main:app
-# 队列模式在另一终端启动：
-.venv/Scripts/python.exe -m backend.src.worker
-```
+| 配置 | 用途 |
+|---|---|
+| `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` | 模型服务 |
+| `LLM_TIMEOUT_SECONDS`、`LLM_MAX_RETRIES` | 请求超时与有限重试 |
+| `API_KEYS` | 应用访问 Key，production 必填 |
+| `ALLOWED_REPO_ROOTS` | 允许操作的仓库目录，容器内通常为 `/workspace` |
+| `DATABASE_BACKEND` | `sqlite` 或 `mysql` |
+| `DATABASE_PATH` | SQLite 文件，容器内为 `/app/backend/data/devpilot.db` |
+| `MYSQL_URL` | MySQL 连接串，密码需 URL 编码 |
+| `TASK_QUEUE_BACKEND` | `inline`、`sqlite` 或 `redis` |
+| `REDIS_URL` | Redis 队列连接 |
+| `TASK_INLINE_MAX_RUNNING` | 单 API 进程容量，默认 8 |
+| `TASK_WORKER_MAX_CONCURRENCY` | Worker 并发，默认 2 |
+| `TASK_QUEUE_MAX_DEPTH` | 新入队容量，默认 100 |
+| `TASK_WORKER_LEASE_SECONDS`、`TASK_WORKER_HEARTBEAT_SECONDS` | 租约与续租，默认 300/30 秒 |
+| `TASK_MAX_ATTEMPTS` | 普通执行故障最大尝试次数，默认 3 |
+| `RAG_MODE` | `manual` 或按特征选择的 `auto` |
+| `GITHUB_PERSONAL_ACCESS_TOKEN` | GitHub 访问与发布 |
 
-| 配置 | 执行位置与状态存储 | 限制 |
-|---|---|---|
-| `TASK_QUEUE_BACKEND=inline` | API 内后台线程；状态可选 SQLite/MySQL | 单 API 进程；`TASK_INLINE_MAX_RUNNING=8`；0 不限制 |
-| `TASK_QUEUE_BACKEND=sqlite` | 独立 Worker；SQL 队列随 `DATABASE_BACKEND` 使用 SQLite 或 MySQL | SQLite 需同机共享数据库文件；MySQL 使用行锁与 SKIP LOCKED 领取 |
-| `TASK_QUEUE_BACKEND=redis` | 独立 Worker；Lua 队列；业务状态仍由 SQLite/MySQL 保存 | 单节点/Sentinel；不支持 Redis Cluster；跨机时选择 MySQL |
+## 运行镜像
 
-`TASK_QUEUE_MAX_DEPTH=100` 控制新入队与显式恢复，0 不限制。SQLite/Redis 的入队深度检查在写事务/Lua 内完成；MySQL 是软上限，并发入队可能短暂超额。已经在途的任务保留有限重试，因此回流可能使 queued 暂时超过上限。`TASK_WORKER_MAX_CONCURRENCY=2` 控制每个 Worker，inline 上限按单 API 进程计。容量不足返回 429 与 `Retry-After`，拒绝时不改变任务状态。
-
-## 鉴权与目录授权
-
-```dotenv
-API_KEYS=replace-with-a-random-secret
-ALLOWED_REPO_ROOTS=E:/desktop/projects
-DATABASE_BACKEND=sqlite
-TASK_QUEUE_BACKEND=sqlite
-```
-
-容器内白名单填写 `/workspace`，多根目录和多 Key 用逗号分隔。业务 API（含 SSE）接受 `Authorization: Bearer <key>` 或 `X-API-Key`；失败返回 401 与 `WWW-Authenticate: Bearer`。`/healthz`、`/readyz` 及 CORS 预检不需要 Key。development/test 未配置 Key 时兼容本地访问并打印提示，production 无 Key 拒绝启动。
-
-前端首次发现 401 时弹出 Key 输入框，通过 `/api/auth/check` 验证后存入当前标签页的 sessionStorage。axios 与 fetch SSE 都带认证头；不会自动重放执行或发布请求，用户验证后重新确认操作。点击顶部钥匙图标可以更换或清除 Key。
-
-请求模型会解析绝对路径、`..` 和符号链接，越过白名单返回 422；执行、恢复、Diff、发布和 Worker 构造运行器时再校验历史路径，拒绝返回 403。Key 是共享应用凭据，不提供用户身份、租户隔离或按 Key 分配不同仓库权限。根目录未配置时不限制仓库，生产部署应显式配置。
-
-## Compose
-
-默认服务继续使用 SQLite/inline。先复制两个配置模板，再填写 `backend/.env` 的 API_KEYS 和 `/workspace` 白名单；只打开 profile 不会自动改变 API 的执行模式。
+| 镜像 | 用途 |
+|---|---|
+| `devpilot-backend:latest` | API 与 Worker 共用 |
+| `devpilot-frontend:latest` | Nginx 与静态前端 |
+| `devpilot-sandbox:py312` | Python 命令与验证 |
+| `devpilot-sandbox:polyglot` | 可选 TypeScript/Java 命令与验证 |
 
 ```powershell
-Copy-Item .env.example .env
-Copy-Item backend/.env.example backend/.env
-# 配好 Key、工作区后启动本地演示：
-docker compose up --build
-# backend/.env 中 TASK_QUEUE_BACKEND=sqlite，使用独立 Worker：
-docker compose --profile worker up --build
+docker compose build sandbox backend frontend
+docker compose up -d backend frontend
+docker compose ps
 ```
 
-选择 MySQL + Redis 时，根 `.env` 填写 `DEVPILOT_MYSQL_ROOT_PASSWORD`、`DEVPILOT_MYSQL_PASSWORD`，并在 `backend/.env` 中配置：
+前端地址 `http://localhost:8080`。容器内仓库路径使用 `/workspace/<repository>`。默认命名卷保存状态数据库；宿主机 Docker socket 用于本机沙箱调度，部署入口应置于可信网络或受保护网关。
+
+## 独立 Worker
+
+在服务配置中设置 `TASK_QUEUE_BACKEND=sqlite`，然后：
+
+```powershell
+docker compose --profile worker up -d backend frontend worker
+```
+
+SQL 队列可使用 SQLite 或 MySQL。Redis 模式还需配置 `REDIS_URL`。业务 cancelled 由 Worker 按不可重试结果收口为队列 dead，保留取消原因；队列 dead 不是业务失败数量。租约到期任务隔离后，应确认旧执行者停止再恢复。
+
+## MySQL 与 Redis
+
+根 `.env` 设置数据库初始化密码，服务 `.env` 设置：
 
 ```dotenv
 DATABASE_BACKEND=mysql
-MYSQL_URL=mysql://devpilot:replace-password@mysql:3306/devpilot
+MYSQL_URL=mysql://devpilot:填写密码@mysql:3306/devpilot
 TASK_QUEUE_BACKEND=redis
 REDIS_URL=redis://redis:6379/0
-API_KEYS=replace-with-a-random-secret
-ALLOWED_REPO_ROOTS=/workspace
 ```
-
-连接串密码中的特殊字符需 URL 编码。MySQL/Redis 没有暴露宿主机端口，数据分别存入 named volume；先等待存储健康，再启动应用：
 
 ```powershell
 docker compose --profile mysql --profile redis up -d --wait mysql redis
-docker compose --profile mysql --profile redis --profile worker up --build
+docker compose --profile mysql --profile redis --profile worker up -d backend frontend worker
 ```
 
-API 与 Worker 镜像均安装 MySQL/Redis optional dependencies。不要在多主机上用网络文件系统共享 SQLite；MySQL 共享任务、事件、检查点、评测等九张业务表，但工作区仍需另行共享或同步。默认 Compose 的 Docker socket 挂载用于本地演示；生产隔离见下文。
+数据库与 Redis 默认不暴露宿主机端口。SQLite 使用单机数据卷；多个主机共享状态时使用共享数据库及一致的工作区映射。
 
-## SQLite 停机迁移到 MySQL
+## 数据迁移与备份
 
-迁移前停止 API、Worker 与评测，备份 SQLite，并确认没有 running/cancelling 任务或 claimed 队列项。源库需已经升级到当前 SQLite 表结构；目标使用专用空 MySQL 数据库。
+迁移前停止 API/Worker，确认没有在途任务，备份 SQLite。目标 MySQL 使用专用空数据库。
 
 ```powershell
-$env:DATABASE_BACKEND = "mysql"
-$env:MYSQL_URL = "mysql://devpilot:replace-password@127.0.0.1:3306/devpilot"
-.venv/Scripts/python.exe -m backend.scripts.migrate_sqlite_to_mysql --source backend/data/devpilot.db
+$env:DATABASE_BACKEND = 'mysql'
+$env:MYSQL_URL = 'mysql://devpilot:填写密码@127.0.0.1:3306/devpilot'
+uv run python -m backend.scripts.migrate_sqlite_to_mysql --source backend/data/devpilot.db
 ```
 
-脚本以只读 SQLite 快照分批复制九张表，在同一 MySQL 数据事务内核对行数；中途失败回滚所有插入，目标非空时拒绝覆盖。DDL 建表不在回滚范围内。切换前检查导出的行数和历史任务/事件；该脚本不会迁移 Redis 键或工作区文件。
+迁移工具在事务内核对业务表记录；非空目标拒绝覆盖。工作区文件另行同步，切换后检查任务、事件与检查点。
 
-## 租约、取消与恢复
+## 服务检查
 
-1. `/plan` 保存 awaiting_approval；批准后 `/execute` 入队或启动 inline 线程。数据库状态迁移防止重复执行。
-2. 领取自增 attempts 和 fence_token；心跳、结算检查 owner、token 和未过期租约。失败按最大尝试次数有限重试，次数耗尽进入 dead。
-3. API 重启不改变独立 Worker 的运行状态。取消 running 任务只置 cancelling，由 Worker 在安全点触发取消；取消 queued 任务不会删除已经领取的租约。
-   Worker 观察到业务任务 cancelled 后按不可重试结果收口：队列进入 dead，记录“任务已取消”，清空 owner/租约，保留业务 cancelled 状态；不会把取消计为成功或回流 queued。单次 Worker、持续 Worker 和领取时遇到已取消任务采用相同规则，仍受 owner/token/租约校验约束。队列 dead 包含取消终止，不能直接当作业务失败数。
-4. 到期租约隔离为 dead，运行任务置 interrupted，**不自动交接**。SQL 在同一事务中更新队列和任务；Redis 的 Lua 隔离与 SQL 业务状态更新是两个操作，跨存储故障仍需要运维核对。
-5. 确认旧 Worker 与工具停止、检查 Diff 后，显式 `/resume`。角色消息恢复后重新进入编排流程，工具可能重放。
-6. Worker 接受 SIGINT/SIGTERM；停止领取后继续续租并等待在途任务结束；超过退出期限时仍需检查残留工具/沙箱。
-
-执行服务在事件、检查点、完成与异常收尾前校验租约，存储不可达按失效处理，不缓存授权结果。这是执行层的协作式 fencing 检查；**校验与业务写入之间仍有竞争窗口，不是数据库事务级 fencing**。文件写入/在途工具无法被该校验抢占，不能承诺自动故障切换或副作用恰好一次。同一仓库不同任务没有互斥锁。Redis 队列格式增加全状态索引并修正排序，旧试验队列应停止、排空后升级。
-
-## 独立 Docker Host 与 Kubernetes
-
-远端 daemon 必须看到与 Worker 一致的仓库路径并预装沙箱镜像；本项目不提供自动仓库同步。远程连接示例：
+`/healthz` 检查 API 存活，`/readyz` 检查就绪依赖；健康探针无需 Key。API Key 通过 `Authorization: Bearer ...` 或 `X-API-Key` 传递。
 
 ```powershell
-$env:DOCKER_HOST = "tcp://docker-host.local:2376"
-$env:DOCKER_TLS_VERIFY = "1"
-$env:DOCKER_CERT_PATH = "C:/docker-certs"
+docker compose ps
+docker compose logs --tail 100 backend
 ```
 
-`deploy/kubernetes/` 使用 MySQL + Redis ConfigMap 和 Secret 模板，API 不挂载 Docker socket。部署前准备实际镜像、Secret、workspace PVC、远端 daemon 证书与网络策略。现有清单没有每任务 Job 调度器、Firecracker 执行器，尚未完成集群验收。
-
-## 如何测试与已知限制
-
-```powershell
-.venv/Scripts/python.exe -m pytest
-# 以下变量只能指向专用测试服务，集成用例会清理测试队列。
-$env:TEST_MYSQL_URL = "mysql://root:devpilot@127.0.0.1:33306/devpilot_test"
-$env:TEST_REDIS_URL = "redis://127.0.0.1:36379/1"
-.venv/Scripts/python.exe -m pytest backend/tests/integration/test_queue_backends.py
-Set-Location frontend
-npm test
-npm run build
-```
-
-已覆盖三后端一致性、并发独占领取、优先级、深度拒绝、过期前后持有权、取消竞争、MySQL API→Worker→SSE、迁移回滚和非空保护，以及浏览器认证流程。尚未覆盖真实多主机、断电/网络分区、事务级 fencing、仓库互斥、租户隔离和远端沙箱故障。完整验证与实验证据见 [项目复核](project-review.md)。
+前端验证 Key 后使用当前标签页会话保存凭据。执行与发布操作由用户明确确认，不自动重放。停止或重建容器时保留业务卷；删除数据卷会删除状态库，应先备份。

@@ -53,7 +53,7 @@ const option = computed(() => {
 <template>
   <section class="evaluation-chart-section">
     <header class="section-heading">
-      <div><h2>Cost comparison</h2><p>Switch metrics without leaving the persisted experiment set</p></div>
+      <div><h2>执行开销</h2><p>当前最终批次的工具调用、执行耗时与模型用量</p></div>
       <div class="chart-metric-switch" role="group" aria-label="图表指标">
         <button type="button" :aria-pressed="metric === 'avg_tool_calls'" title="工具调用" @click="metric = 'avg_tool_calls'"><Wrench :size="15" /></button>
         <button type="button" :aria-pressed="metric === 'avg_elapsed_seconds'" title="耗时" @click="metric = 'avg_elapsed_seconds'"><Clock3 :size="15" /></button>

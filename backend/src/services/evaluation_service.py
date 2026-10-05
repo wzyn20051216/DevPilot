@@ -1,40 +1,33 @@
-"""! @brief Evaluation Dashboard 查询服务。"""
+"""! @brief 向工作台提供已发布的最终评测结果，不依赖实验执行工具。"""
 
-from ..database.evaluation_repository import evaluation_repository
-from ..evals.analysis import (
-    AnalysisRow,
-    aggregate_case_results,
-    build_ablation_report,
-    summarize_by_difficulty,
-)
-from ..evals.dataset import load_benchmark_cases
-from ..evals.metrics import MetricValues, summarize_results
+import json
+from pathlib import Path
+
+RESULT_PATH = Path(__file__).resolve().parents[1] / "assets/evaluation/latest.json"
 
 
 class EvaluationService:
-    """! @brief 连接评测仓储与 Dashboard API 的只读服务。"""
+    """! @brief 只读结果快照，与任务数据库和 research 工具解耦。"""
 
-    def summary(self, run_id: str | None = None) -> dict[str, MetricValues]:
-        """! @brief 汇总全部实验或指定批次的指标。
+    @staticmethod
+    def _load(run_id: str | None = None) -> dict:
+        """! @brief 仅接受发布快照中的批次，防止混入历史实验统计。"""
+        result = json.loads(RESULT_PATH.read_text(encoding="utf-8"))
+        if run_id is not None and run_id not in {result["run_id"], *result["run_ids"]}:
+            raise ValueError("当前发布结果不包含该实验批次")
+        return result
 
-        @param run_id 可选实验批次 ID。
-        @return 按 variant 分组的成功率、成本和耗时指标。
-        """
+    def summary(self, run_id: str | None = None) -> dict:
+        """! @brief 返回最终批次按执行策略聚合的质量、耗时与 Token 指标。"""
+        return self._load(run_id)["summary"]
 
-        results = evaluation_repository.get_results(run_id=run_id)
-        return summarize_results(results)
+    def difficulty_summary(self, run_id: str | None = None) -> list:
+        """! @brief 返回快照中已有的难度分组，不为真实 Issue 虚构难度。"""
+        return self._load(run_id)["difficulty_summary"]
 
-    def difficulty_summary(self, run_id: str | None = None) -> list[AnalysisRow]:
-        """! @brief 按难度和 variant 返回 case 级汇总指标。"""
-
-        results = evaluation_repository.get_results(run_id=run_id)
-        return summarize_by_difficulty(results, load_benchmark_cases())
-
-    def ablation_report(self, run_id: str | None = None) -> list[AnalysisRow]:
-        """! @brief 返回 RAG 与多 Agent 的完整配对消融报告。"""
-
-        results = evaluation_repository.get_results(run_id=run_id)
-        return build_ablation_report(aggregate_case_results(results))
+    def ablation_report(self, run_id: str | None = None) -> list:
+        """! @brief 返回同批已发布的配对统计，没有配对时返回空列表。"""
+        return self._load(run_id)["ablation_report"]
 
 
 evaluation_service = EvaluationService()

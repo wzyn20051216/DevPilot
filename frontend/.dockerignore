@@ -4,3 +4,4 @@ dist
 .git
 .vscode
 npm-debug.log*
+tests

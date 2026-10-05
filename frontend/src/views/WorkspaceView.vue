@@ -28,14 +28,14 @@ import type { TaskPlanResponse } from '../types/agent'
 const store = useTaskStore()
 const inputMode = ref<'local' | 'github'>('local')
 const repoPath = ref(
-  import.meta.env.VITE_DEFAULT_REPO_PATH ?? 'E:\\desktop\\devpilot-test-repo',
+  import.meta.env.VITE_DEFAULT_REPO_PATH ?? '',
 )
-const question = ref('修复 add 函数中的 bug 并运行测试。')
+const question = ref('')
 const executionMode = ref<'single_no_rag' | 'single_rag' | 'multi_no_rag' | 'multi_rag'>(
-  'single_no_rag',
+  'multi_rag',
 )
 const githubOwner = ref('')
-const githubRepo = ref('devpilot-test-repo')
+const githubRepo = ref('')
 const issueNumber = ref(1)
 const issueUrl = ref('')
 const planning = ref(false)
@@ -194,20 +194,20 @@ function eventLabel(type: string) {
           <label for="repo-path">Repository</label>
           <div class="input-shell">
             <Terminal :size="15" />
-            <input id="repo-path" v-model="repoPath" autocomplete="off" spellcheck="false" />
+            <input id="repo-path" v-model="repoPath" placeholder="例如 /workspace/my-repository" autocomplete="off" spellcheck="false" />
           </div>
 
           <label for="execution-mode">Execution strategy</label>
           <select id="execution-mode" v-model="executionMode">
-            <option value="single_no_rag">Single Agent · no RAG (default)</option>
-            <option value="single_rag">Single Agent · Hybrid RAG</option>
+            <option value="single_no_rag">Single Agent · no RAG (experiment)</option>
+            <option value="single_rag">Single Agent · Hybrid RAG (experiment)</option>
             <option value="multi_no_rag">Multi Agent · no RAG</option>
-            <option value="multi_rag">Multi Agent · Hybrid RAG</option>
+            <option value="multi_rag">Multi Agent · Hybrid RAG (default)</option>
           </select>
 
           <template v-if="inputMode === 'local'">
             <label for="question">Development Task</label>
-            <textarea id="question" v-model="question" rows="9" />
+            <textarea id="question" v-model="question" rows="9" placeholder="描述目标行为、当前现象与验收条件" />
           </template>
 
           <template v-else>

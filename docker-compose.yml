@@ -1,5 +1,6 @@
 services:
   backend:
+    image: devpilot-backend:latest
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -10,6 +11,7 @@ services:
       DATABASE_PATH: /app/backend/data/devpilot.db
       WORKSPACE_ROOT: /workspace
       HOST_WORKSPACE_ROOT: ${DEVPILOT_HOST_WORKSPACE_ROOT}
+      ALLOWED_REPO_ROOTS: /workspace
     volumes:
       - devpilot_data:/app/backend/data
       - ${DEVPILOT_HOST_WORKSPACE_ROOT}:/workspace
@@ -30,6 +32,7 @@ services:
     restart: unless-stopped
 
   frontend:
+    image: devpilot-frontend:latest
     build:
       context: ./frontend
     ports:
@@ -42,6 +45,7 @@ services:
   # API/Worker 分离：Worker 独立进程经任务队列领取并执行任务。
   # 仅按需启动（docker compose --profile worker up）。
   worker:
+    image: devpilot-backend:latest
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -53,6 +57,7 @@ services:
       DATABASE_PATH: /app/backend/data/devpilot.db
       WORKSPACE_ROOT: /workspace
       HOST_WORKSPACE_ROOT: ${DEVPILOT_HOST_WORKSPACE_ROOT}
+      ALLOWED_REPO_ROOTS: /workspace
     volumes:
       - devpilot_data:/app/backend/data
       - ${DEVPILOT_HOST_WORKSPACE_ROOT}:/workspace
@@ -91,6 +96,22 @@ services:
       retries: 10
     profiles: ["redis"]
     restart: unless-stopped
+
+  sandbox:
+    image: devpilot-sandbox:py312
+    build:
+      context: ./backend/docker
+      dockerfile: sandbox.Dockerfile
+      target: python
+    profiles: ["sandbox"]
+
+  sandbox-polyglot:
+    image: devpilot-sandbox:polyglot
+    build:
+      context: ./backend/docker
+      dockerfile: sandbox.Dockerfile
+      target: polyglot
+    profiles: ["polyglot"]
 
 volumes:
   # SQLite 使用 Docker 管理的 Linux 文件系统，避免 Windows bind mount 锁冲突。

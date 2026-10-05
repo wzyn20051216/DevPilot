@@ -1,6 +1,6 @@
 """! @brief Evals 结果仓储。"""
 
-from ..evals.models import EvaluationResult
+from ..models.evaluation import EvaluationResult
 from .connection import get_connection
 
 

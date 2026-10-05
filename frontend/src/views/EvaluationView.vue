@@ -10,7 +10,7 @@ import type { EvaluationSummaryResponse } from '../types/evaluation'
 const summary = ref<EvaluationSummaryResponse>({})
 const loading = ref(true)
 const error = ref('')
-const variantOrder = ['single_no_rag', 'single_rag', 'multi_no_rag', 'multi_rag']
+const variantOrder = ['single_adaptive', 'single_no_rag', 'single_rag', 'multi_no_rag', 'multi_rag']
 
 const rows = computed(() => Object.entries(summary.value).sort(
   ([first], [second]) => variantOrder.indexOf(first) - variantOrder.indexOf(second),
@@ -38,7 +38,7 @@ onMounted(loadSummary)
 <template>
   <main class="evaluation-view">
     <div class="workspace-heading evaluation-heading">
-      <div><p class="eyebrow">EXPERIMENT OBSERVATORY</p><h1>Evaluation Dashboard</h1></div>
+      <div><p class="eyebrow">LATEST VERIFIED RESULTS</p><h1>最终评测结果</h1></div>
       <button class="icon-button" type="button" title="刷新评测结果" @click="loadSummary">
         <RefreshCw :size="17" :class="{ spin: loading }" />
       </button>
@@ -54,14 +54,14 @@ onMounted(loadSummary)
 
     <section class="evaluation-table-section">
       <header class="section-heading">
-        <div><h2>Architecture comparison</h2><p>Aggregate performance across persisted benchmark runs</p></div>
+        <div><h2>真实缺陷修复评测</h2><p>9 道有效 Issue，各重复 2 次；独立测试通过与流程完整成功分别统计</p></div>
       </header>
       <div v-if="loading" class="loading-row"><RefreshCw :size="18" class="spin" /> Loading evaluation data</div>
       <div v-else-if="error" class="error-banner" role="alert">{{ error }}</div>
       <div v-else-if="!rows.length" class="empty-state evaluation-empty"><Activity :size="22" /> No evaluation records</div>
       <div v-else class="table-scroll">
         <table class="evaluation-table">
-          <thead><tr><th>Variant</th><th>Runs</th><th>Success</th><th>Tests</th><th><Wrench :size="14" /> Tools</th><th>Iterations</th><th><Clock3 :size="14" /> Time</th><th><Coins :size="14" /> Tokens</th></tr></thead>
+          <thead><tr><th>执行策略</th><th>运行次数</th><th>流程成功</th><th>独立测试通过</th><th><Wrench :size="14" /> 工具调用</th><th>轮次</th><th><Clock3 :size="14" /> 耗时</th><th><Coins :size="14" /> Token</th></tr></thead>
           <tbody>
             <tr v-for="[variant, value] in rows" :key="variant">
               <td><code>{{ variant }}</code></td><td>{{ value.runs }}</td>

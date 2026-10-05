@@ -7,7 +7,6 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.141.1",
     "loguru>=0.7.3",
-    "matplotlib>=3.11.2",
     "mcp>=2.2.0",
     "numpy>=2.5.3",
     "openai>=3.6.0",
@@ -15,7 +14,6 @@ dependencies = [
     "pydantic-settings>=2.15.0",
     "python-dotenv>=1.2.3",
     "rank-bm25>=0.2.2",
-    "scipy>=1.18.1",
     "sentence-transformers>=6.0.1",
     "torch>=2.14.0",
     "uvicorn[standard]>=0.52.4",
@@ -33,9 +31,13 @@ dev = [
     "pymysql>=1.1",
     "redis>=5",
 ]
+research = [
+    "matplotlib>=3.11.2",
+    "scipy>=1.18.1",
+]
 
 [tool.pytest.ini_options]
-testpaths = ["backend/tests"]
+testpaths = ["tests/backend"]
 pythonpath = ["."]
 addopts = "-q"
 

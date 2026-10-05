@@ -11,3 +11,11 @@ backend/data
 frontend/node_modules
 frontend/dist
 output
+research
+tests
+docs
+ai_team
+garden-gpt-image-2
+.workbuddy
+.env
+.env.local

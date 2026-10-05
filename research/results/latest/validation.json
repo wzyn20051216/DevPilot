@@ -1,0 +1,23 @@
+{
+  "date": "2026-10-05",
+  "backend_tests": {
+    "passed": 242,
+    "failed": 0,
+    "skipped": 0,
+    "backends": [
+      "sqlite",
+      "mysql",
+      "redis"
+    ]
+  },
+  "frontend_tests_passed": 8,
+  "frontend_build_passed": true,
+  "runtime_imports_research": false,
+  "docker_backend_healthy": true,
+  "docker_frontend_http_status": 200,
+  "business_tasks_preserved": 94,
+  "final_dashboard_runs": 18,
+  "final_dashboard_correct_repairs": 14,
+  "final_dashboard_full_successes": 10,
+  "paid_model_calls": 0
+}

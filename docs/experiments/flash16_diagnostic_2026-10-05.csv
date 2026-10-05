@@ -1,5 +1,0 @@
-instance_id,variant,repeat_index,success,tests_passed,iterations,tool_calls,total_tokens,prompt_tokens,completion_tokens,elapsed_seconds,llm_seconds,tool_seconds,patch_bytes,patch_sha256,error
-astropy__astropy-13977,single_no_rag,1,False,False,16,22,250758,231342,19416,211.808511,89.932826,119.80512,0,e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855,Agent 未生成候选补丁
-astropy__astropy-13977,single_adaptive,1,False,False,16,27,217742,198113,19629,214.461179,85.98756,126.564563,1117,5bf5774dc490b006ff777e9fe2484e2e847443b3bc72d47b841f960dcb0d9a70,agent 达到最大迭代次数且工作流契约未满足：缺少修改后同一 reproducer 的通过结果；最近一次 run_test 未通过
-scikit-learn__scikit-learn-26323,single_adaptive,1,True,True,13,19,148852,140096,8756,93.492836,38.78131,52.963268,587,dbf960f79f1a1f1885e8a9eec97da4ddd2dfe055c04f7f140e815969380ed301,
-scikit-learn__scikit-learn-26323,single_no_rag,1,True,True,14,20,149511,144421,5090,105.093176,24.595489,78.565168,587,dbf960f79f1a1f1885e8a9eec97da4ddd2dfe055c04f7f140e815969380ed301,
