@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     port: int = 8000
     log_level: str = "INFO"
 
-    llm_api_key: str = ""
+    llm_api_key: str = Field(default="", repr=False)
     llm_base_url: str | None = None
     llm_model: str = ""
     llm_reasoning_effort: Literal["low", "high", "max"] | None = None

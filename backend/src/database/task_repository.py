@@ -34,7 +34,7 @@ class TaskRepository:
         repo_path: str,
         question: str,
         plan: list[PlanStep],
-        execution_mode: ExecutionMode = "single_no_rag",
+        execution_mode: ExecutionMode = "multi_rag",
     ) -> DevelopmentTask:
         """! @brief 创建任务并保存计划步骤。
 

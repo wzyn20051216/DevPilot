@@ -7,6 +7,9 @@ from collections.abc import Iterator
 from time import perf_counter
 from typing import Any, Callable
 
+from openai import BadRequestError
+from pydantic import BaseModel, ValidationError
+
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageFunctionToolCallParam,
@@ -25,6 +28,9 @@ from ..models.agent_state import (
 )
 from ..tools.registry import execute_tool, get_tool_definitions
 from .workflow import WorkflowContract, WorkflowProgress
+from .protocol_prompt import ROLE_PROTOCOL_PROMPT
+from ..models.agent_protocol import CoderProtocolOutput, TesterProtocolOutput
+from ..services.structured_output import AgentProtocolError, extract_json_block, parse_protocol_output
 
 
 class BaseToolAgent:
@@ -43,6 +49,7 @@ class BaseToolAgent:
         checkpoint_callback: Callable[[str, list[dict[str, Any]]], None] | None = None,
         initial_messages: list[ChatCompletionMessageParam] | None = None,
         workflow_contract: WorkflowContract | None = None,
+        output_model: type[BaseModel] | None = None,
     ) -> None:
         # 注意：不要再写成 self.xxx = xxx, (带逗号变 tuple)
         # 同时给 self 属性加显式注解，避免 Pyright 把 self.name
@@ -50,6 +57,14 @@ class BaseToolAgent:
         self.repo_path: str = repo_path
         self.name: AgentRole = name
         self.system_prompt: str = system_prompt
+        self.output_model = output_model
+        if output_model is not None:
+            self.system_prompt += ROLE_PROTOCOL_PROMPT + "\n输出 JSON Schema：\n" + json.dumps(
+                output_model.model_json_schema(), ensure_ascii=False,
+            )
+        self._json_mode_unsupported = False
+        self._protocol_repair_attempted = False
+        self._json_mode_requested = False
         self.allowed_tools: set[str] = set(allowed_tools)
         self.max_iterations: int = max_iterations
         self.edit_deadline = edit_deadline
@@ -61,6 +76,125 @@ class BaseToolAgent:
         # None 保持所有历史 Agent/评测变体的原有完成语义。
         self.workflow_contract = workflow_contract
         self.client: Any = create_client()
+
+    def _create_completion(self, **kwargs: Any) -> Any:
+        """! @brief 收尾阶段使用 JSON 对象模式；仅明确不支持时降级请求约束。"""
+        if self.output_model is not None and kwargs.get("tool_choice") == "none" and not self._json_mode_unsupported:
+            kwargs["response_format"] = {"type": "json_object"}
+            self._json_mode_requested = True
+        try:
+            return self.client.chat.completions.create(**kwargs)
+        except BadRequestError as exc:
+            message = str(exc).casefold()
+            # 非兼容能力错误（认证、余额、其他参数等）不能被静默重试。
+            unsupported = "response_format" in message and any(
+                term in message for term in ("unsupported", "not support", "unknown", "not allowed")
+            )
+            if "response_format" not in kwargs or not unsupported:
+                raise
+            self._json_mode_unsupported = True
+            kwargs.pop("response_format")
+            return self.client.chat.completions.create(**kwargs)
+
+    def _validated_final_output(
+        self, raw_message: Any, messages: list[ChatCompletionMessageParam], state: AgentState,
+        tool_definitions: list[Any],
+    ) -> BaseModel | None:
+        """! @brief 严格校验角色输出，最多一次纯格式纠正；机器事实不由模型声明。"""
+        if self.output_model is None:
+            return None
+
+        def validate(content: str) -> BaseModel:
+            result = parse_protocol_output(content, self.output_model)
+            if isinstance(result, CoderProtocolOutput):
+                expected = {path.replace("\\", "/") for path in state.modified_files}
+                reported = {path.replace("\\", "/") for path in result.modified_files}
+                if expected != reported or len(result.modified_files) != len(reported):
+                    raise ValueError("modified_files 必须与本轮真实写入记录一致，不得遗漏或虚构")
+            return result
+
+        try:
+            output = validate(raw_message.content or "")
+        except ValueError as exc:
+            self._protocol_repair_attempted = True
+            if self.cancel_check():
+                raise AgentProtocolError("输出纠正前任务已取消") from exc
+            details = (
+                json.dumps(exc.errors(include_input=False), ensure_ascii=False, default=str)
+                if isinstance(exc, ValidationError) else str(exc)
+            )
+            if not messages or messages[-1].get("role") != "assistant" or messages[-1].get("content") != raw_message.content:
+                assistant: dict[str, Any] = {"role": "assistant", "content": raw_message.content}
+                reasoning = getattr(raw_message, "reasoning_content", None)
+                if settings.llm_model.startswith("deepseek-") and reasoning is not None:
+                    assistant["reasoning_content"] = reasoning
+                messages.append(assistant)
+            messages.append({"role": "user", "content": (
+                "角色输出未通过严格协议校验。现在只纠正 JSON，不调用工具，不修改代码。\n"
+                + "校验错误：" + details[:1800]
+                + "\n本轮真实修改文件：" + json.dumps(state.modified_files, ensure_ascii=False)
+                + "\n必须输出 system 中完整 Schema 的唯一 JSON 对象。"
+            )})
+            started = perf_counter()
+            response = self._create_completion(
+                model=settings.llm_model, messages=messages, tools=tool_definitions,
+                tool_choice="none", temperature=0.0, **self._llm_completion_options(),
+            )
+            state.llm_seconds += perf_counter() - started
+            self._accumulate_usage(state, response)
+            if settings.agent_token_budget > 0 and state.total_tokens > settings.agent_token_budget:
+                raise AgentProtocolError("输出纠正请求后 Agent Token 预算已用尽")
+            corrected = response.choices[0].message
+            if corrected.tool_calls:
+                raise AgentProtocolError("格式纠正阶段返回了禁止执行的工具调用")
+            try:
+                output = validate(corrected.content or "")
+                # 格式纠正不能把拒绝/阻塞改成放行，或删除已有待修复问题。
+                try:
+                    original = json.loads(extract_json_block(raw_message.content or ""))
+                except ValueError:
+                    original = {}
+                if isinstance(original, dict):
+                    for field in ("approved", "status"):
+                        previous = original.get(field)
+                        if field == "approved" and isinstance(previous, str) and previous.casefold() in {"true", "false"}:
+                            previous = previous.casefold() == "true"
+                        meaningful = (isinstance(previous, bool) if field == "approved"
+                                      else isinstance(previous, str) and previous in {"implemented", "blocked"})
+                        if meaningful and hasattr(output, field) and getattr(output, field) != previous:
+                            raise AgentProtocolError(f"格式纠正不得改变原 {field} 结论")
+                    if original.get("issues") and hasattr(output, "issues") and not output.issues:
+                        raise AgentProtocolError("格式纠正不得删除原审查问题")
+            except ValueError as second:
+                if self.output_model is TesterProtocolOutput and state.test_report is not None:
+                    # Tester 的解释格式坏了也不丢弃真实事实；生成严格机器报告。
+                    output = TesterProtocolOutput(
+                        passed=state.test_report.passed, summary=state.test_report.summary,
+                        stdout=state.test_report.stdout[-4000:], stderr=state.test_report.stderr[-4000:],
+                    )
+                else:
+                    # 不因格式错误重做代码、不继续耗尽工具轮数，也不假装交接成功。
+                    raise AgentProtocolError(f"一次格式纠正后仍不符合 {self.output_model.__name__}") from second
+
+        if isinstance(output, TesterProtocolOutput):
+            if state.test_report is None:
+                raise AgentProtocolError("Tester 没有真实 run_test 记录，不能输出验证结论")
+            output = TesterProtocolOutput(
+                passed=state.test_report.passed, summary=state.test_report.summary,
+                stdout=state.test_report.stdout[-4000:], stderr=state.test_report.stderr[-4000:],
+            )
+        return output
+
+    def _protocol_data(self, output: BaseModel | None) -> dict[str, Any]:
+        """! @brief 对外保留经过校验的字段及兼容/纠正记录。"""
+        if output is None:
+            return {}
+        return {"structured_output": output.model_dump(), "output_validation": {
+            "schema": type(output).__name__, "validated": True,
+            "repair_attempted": self._protocol_repair_attempted,
+            "json_mode_requested": self._json_mode_requested,
+            "json_mode_compatibility_fallback": self._json_mode_unsupported,
+        }}
 
     def _cancellation_event(self, state: AgentState) -> AgentEvent:
         """! @brief 构造统一的协作式取消事件。"""
@@ -304,6 +438,8 @@ class BaseToolAgent:
             answer="",
         )
         state.status = "running"
+        self._protocol_repair_attempted = False
+        self._json_mode_requested = False
         yield AgentEvent(
             type="start",
             agent=self.name,
@@ -320,6 +456,13 @@ class BaseToolAgent:
             # 断点恢复：以注入消息的副本为起点，保证首条 system、第二条 user
             # 与保存时一致；后续追加的新消息不会改动调用方持有的原列表。
             messages: list[ChatCompletionMessageParam] = list(self.initial_messages)
+            if self.output_model is not None:
+                # 角色协议升级后恢复旧上下文，仍必须使用当前的角色权限与 Schema。
+                current_system = {"role": "system", "content": self.system_prompt}
+                if messages and messages[0].get("role") == "system":
+                    messages[0] = current_system
+                else:
+                    messages.insert(0, current_system)
             # 检查点只消费一次；后续修复轮必须使用新的失败反馈。
             self.initial_messages = None
             messages.append({"role": "user", "content": question})
@@ -487,7 +630,7 @@ class BaseToolAgent:
                     definition["function"]["name"]
                     for definition in active_tool_definitions
                 }
-                response = self.client.chat.completions.create(
+                response = self._create_completion(
                     model=settings.llm_model,
                     messages=messages,
                     tools=active_tool_definitions,
@@ -593,8 +736,12 @@ class BaseToolAgent:
                         )
                         self._emit_checkpoint(messages)
                         continue
+                    output = self._validated_final_output(message, messages, state, tool_definitions)
+                    if self.cancel_check():
+                        yield self._cancellation_event(state)
+                        return
                     state.status = "completed"
-                    state.answer = self._answer_with_test_evidence(
+                    state.answer = output.model_dump_json() if output is not None else self._answer_with_test_evidence(
                         message.content or "",
                         state=state,
                         last_edit_call=last_edit_call,
@@ -608,6 +755,8 @@ class BaseToolAgent:
                         message=state.answer,
                         data={
                             "answer": state.answer,
+                            "modified_files": list(state.modified_files),
+                            **self._protocol_data(output),
                             "iteration": iteration,
                             "tool_calls": [item.model_dump() for item in state.tool_calls],
                             "usage": self._usage_payload(state),
@@ -793,17 +942,23 @@ class BaseToolAgent:
                     # 11.2 记录测试报告（run_test 工具）
                     #     统一写进 state.test_report，不再使用不存在的
                     #     state.tests_passed（Pydantic v2 对未声明字段赋值会抛 ValueError）
-                    if tool_name == "run_test" and isinstance(result, dict) and "passed" in result:
+                    if tool_name == "run_test":
                         last_test_call = len(state.tool_calls)
-                        last_test_targeted = bool(arguments.get("target"))
+                        last_test_targeted = bool(arguments.get("target") or arguments.get("targets") or arguments.get("command"))
+                        test_result = result if isinstance(result, dict) else {"error": "测试未返回结构化结果"}
                         state.test_report = TesterOutput(
-                            passed=bool(result.get("passed")),
+                            passed=(test_result.get("passed") is True
+                                    and test_result.get("returncode", 0) == 0
+                                    and not test_result.get("timed_out", False)),
                             summary=(
-                                f"pytest returncode={result.get('returncode')}"
-                                + ("（执行超时）" if result.get("timed_out") else "")
+                                f"pytest returncode={test_result.get('returncode')}"
+                                + ("；目标测试：" + str(arguments.get("target") or arguments.get("targets") or arguments.get("command"))
+                                   if last_test_targeted else "；完整 pytest 测试范围")
+                                + ("（执行超时）" if test_result.get("timed_out") else "")
+                                + (f"；工具错误：{test_result['error']}" if "error" in test_result else "")
                             ),
-                            stdout=str(result.get("stdout", "")),
-                            stderr=str(result.get("stderr", "")),
+                            stdout=str(test_result.get("stdout", "")),
+                            stderr=str(test_result.get("stderr", test_result.get("error", ""))),
                         )
                         full_test_passed = (
                             state.test_report.passed
@@ -833,6 +988,14 @@ class BaseToolAgent:
                     # 结构化报告放入事件，供 Orchestrator 在 LLM 最终 JSON
                     # 格式有瑕疵时兜底，不携带未截断的任意工具输出。
                     if tool_name == "run_test" and state.test_report is not None:
+                        event_data["test_execution"] = {
+                            "returncode": test_result.get("returncode"),
+                            "timed_out": bool(test_result.get("timed_out")),
+                            "execution_error": bool("error" in test_result or test_result.get("timed_out")
+                                                    or test_result.get("returncode", 0) not in {0, 1}),
+                            "argv": test_result.get("argv"),
+                            "scope": "targeted" if last_test_targeted else "full",
+                        }
                         test_report_data = state.test_report.model_dump()
                         # SSE 事件只需要关键尾部用于展示和兜底，
                         # 避免把 Sandbox 允许的整段输出复制进事件流。
@@ -976,7 +1139,7 @@ class BaseToolAgent:
             )
             messages, _ = self._compact_history(messages, state)
             llm_started = perf_counter()
-            final_response = self.client.chat.completions.create(
+            final_response = self._create_completion(
                 model=settings.llm_model,
                 messages=messages,
                 tools=tool_definitions,
@@ -1030,8 +1193,12 @@ class BaseToolAgent:
                 )
                 return
 
+            output = self._validated_final_output(final_message, messages, state, tool_definitions)
+            if self.cancel_check():
+                yield self._cancellation_event(state)
+                return
             state.status = "completed"
-            state.answer = self._answer_with_test_evidence(
+            state.answer = output.model_dump_json() if output is not None else self._answer_with_test_evidence(
                 final_message.content,
                 state=state,
                 last_edit_call=last_edit_call,
@@ -1045,6 +1212,8 @@ class BaseToolAgent:
                 message=state.answer,
                 data={
                     "answer": state.answer,
+                    "modified_files": list(state.modified_files),
+                    **self._protocol_data(output),
                     "iteration": state.iteration,
                     "tool_calls": [item.model_dump() for item in state.tool_calls],
                     "usage": self._usage_payload(state),
@@ -1065,6 +1234,9 @@ class BaseToolAgent:
         # 15. Agent 本身发生异常
         # -------------------------
         except Exception as exc:  # noqa: BLE001
+            if self.cancel_check():
+                yield self._cancellation_event(state)
+                return
             state.status = "failed"
             yield AgentEvent(
                 type="error",
@@ -1072,6 +1244,8 @@ class BaseToolAgent:
                 iteration=state.iteration,
                 message=str(exc),
                 data={
+                    **({"failure_kind": "protocol_error", "schema": self.output_model.__name__}
+                       if isinstance(exc, AgentProtocolError) and self.output_model is not None else {}),
                     "usage": self._usage_payload(state),
                     "timing": {
                         "llm_seconds": state.llm_seconds,

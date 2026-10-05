@@ -4,6 +4,7 @@ from typing import Any
 from openai.types.chat import ChatCompletionMessageParam
 
 from .base_tool_agent import BaseToolAgent
+from ..models.agent_protocol import TesterProtocolOutput
 
 TESTER_PROMPT = """
 你是 DevPilot 的 Tester Agent。
@@ -19,6 +20,11 @@ TESTER_PROMPT = """
 4. 你不能修改文件。
 5. 根据真实测试结果判断通过或失败。
 6. run_test 返回后应立即总结；只有测试失败时才继续读取相关代码。
+7. 失败反馈必须说明测试目标、命令/退出码、关键失败及其与修改的关系。
+   区分代码失败、未收集测试、超时、缺依赖和只读/禁网环境问题；
+   无关环境故障单独记录，不能猜测它已解决，也不能忽略未知代码失败。
+8. passed、stdout、stderr 必须对应最后一次真实 run_test，不能用分析替代测试。
+   summary 明确已验证范围，目标测试通过不能宣称整个仓库测试通过。
 
 最终回答必须只输出 JSON：
 
@@ -66,4 +72,5 @@ class TesterAgent(BaseToolAgent):
             cancel_check=cancel_check,
             checkpoint_callback=checkpoint_callback,
             initial_messages=initial_messages,
+            output_model=TesterProtocolOutput,
         )

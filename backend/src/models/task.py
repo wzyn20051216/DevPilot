@@ -63,7 +63,7 @@ class DevelopmentTask(BaseModel):
         "awaiting_approval"
     )
 
-    execution_mode: ExecutionMode = "single_no_rag"
+    execution_mode: ExecutionMode = "multi_rag"
 
     plan: list[PlanStep] = Field(
         default_factory=list,

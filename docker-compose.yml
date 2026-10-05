@@ -14,6 +14,7 @@ services:
       ALLOWED_REPO_ROOTS: /workspace
     volumes:
       - devpilot_data:/app/backend/data
+      - devpilot_model_cache:/root/.cache/huggingface
       - ${DEVPILOT_HOST_WORKSPACE_ROOT}:/workspace
       # 仅用于本地开发/答辩 Demo，不是互联网生产部署方案。
       - /var/run/docker.sock:/var/run/docker.sock
@@ -60,6 +61,7 @@ services:
       ALLOWED_REPO_ROOTS: /workspace
     volumes:
       - devpilot_data:/app/backend/data
+      - devpilot_model_cache:/root/.cache/huggingface
       - ${DEVPILOT_HOST_WORKSPACE_ROOT}:/workspace
       # Worker 负责运行 Sandbox，需要访问宿主机 Docker daemon。
       - /var/run/docker.sock:/var/run/docker.sock
@@ -118,3 +120,5 @@ volumes:
   devpilot_data:
   devpilot_mysql:
   devpilot_redis:
+  # RAG 权重独立缓存，业务历史清空和容器升级后仍可离线加载。
+  devpilot_model_cache:

@@ -24,9 +24,12 @@ def get_embedding_model() -> SentenceTransformer:
 
     @return 已加载的 SentenceTransformer 模型。
     """
-    return SentenceTransformer(
-        MODEL_NAME
-    )
+    # 已缓存模型优先离线加载，避免每个 MCP 子进程重新检查远端元数据。
+    # 初次安装缺缓存时仍允许正常下载；离线加载的真实模型错误不伪装成检索成功。
+    try:
+        return SentenceTransformer(MODEL_NAME, local_files_only=True)
+    except OSError:
+        return SentenceTransformer(MODEL_NAME)
 
 def embed_texts(texts: list[str]) -> np.ndarray:
     """! @brief 批量生成文本 embedding 向量。

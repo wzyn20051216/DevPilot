@@ -4,6 +4,7 @@ from typing import Any
 from openai.types.chat import ChatCompletionMessageParam
 
 from .base_tool_agent import BaseToolAgent
+from ..models.agent_protocol import CoderProtocolOutput
 
 
 CODER_PROMPT = """
@@ -23,6 +24,17 @@ CODER_PROMPT = """
    优先用 replace_in_file 做唯一锚点替换，避免重写整个文件。
 8. 修复迭代器/字符串/序列化等运行时协议问题时，先用 protocol_probe 工具在沙箱
    观察真实行为，修复后重跑同一探针确认。
+9. 先阅读相邻实现与相关现有测试，确认公开接口、返回值、异常、stdout/退出码
+   和边界输入；修复应遵循这些契约，不能凭私有属性名称推断行为。
+10. 遇到依赖缺失、权限问题、无法定位契约等阻塞，说明证据和需要的下一步；
+    不把环境问题当代码缺陷去盲目改代码。
+
+最终只输出 JSON：
+{"status":"implemented","summary":"修改摘要","modified_files":[],"changes":[],"risks":[]}
+status 只能为 implemented（实现交给 Tester 验证）或 blocked（无法完成）。
+modified_files 只能列出本轮写入工具实际修改的文件，changes 描述实现及契约；
+risks 记录未验证边界、环境限制，blocked 时必须说明阻塞原因。
+不要添加 passed/approved 等属于其他角色的结论字段。
 """
 
 
@@ -71,4 +83,5 @@ class CodeAgent(BaseToolAgent):
             cancel_check=cancel_check,
             checkpoint_callback=checkpoint_callback,
             initial_messages=initial_messages,
+            output_model=CoderProtocolOutput,
         )

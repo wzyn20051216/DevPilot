@@ -46,8 +46,8 @@ class AgentRunRequest(BaseModel):
     repo_path: AuthorizedRepoPath = Field(..., min_length=1, description="仓库路径")
     question: str = Field(..., min_length=1, description="用户问题")
     execution_mode: ExecutionMode = Field(
-        default="single_no_rag",
-        description="实际执行策略；默认采用当前评测中更可靠的单 Agent 无 RAG",
+        default="multi_rag",
+        description="实际执行策略；默认 Planner/Coder/Tester/Reviewer 多 Agent + RAG",
     )
 
 class AgentRunResponse(BaseModel):
@@ -115,7 +115,7 @@ class GitHubIssueImportRequest(
         min_length=1,
         description="本地代码仓库路径，DevPilot 会在该仓库上执行分析和修改",
     )
-    execution_mode: ExecutionMode = "single_no_rag"
+    execution_mode: ExecutionMode = "multi_rag"
 
 
 class GitHubIssueImportResponse(

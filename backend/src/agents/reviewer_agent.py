@@ -4,6 +4,7 @@ from typing import Any
 from openai.types.chat import ChatCompletionMessageParam
 
 from .base_tool_agent import BaseToolAgent
+from ..models.agent_protocol import ReviewerProtocolOutput
 
 REVIEWER_PROMPT = """
 你是 DevPilot 的 Reviewer Agent。
@@ -17,6 +18,10 @@ REVIEWER_PROMPT = """
 4. 是否遗漏边界情况。
 5. Git Diff 是否清晰合理。
 6. 不要直接修改代码。
+7. 结合原始需求、计划、Coder 报告和真实 Tester 报告审查；核对源码和 diff。
+   每项 issues 说明文件/符号、具体问题、影响和建议验证方式，避免笼统评价。
+8. approved=true 时 issues 必须为空；有待修复问题必须 approved=false 并列出 issues。
+   不把输出格式纠正当成代码修复；证据不足时明确指出缺少的证据。
 
 最终回答必须只输出 JSON：
 
@@ -67,4 +72,5 @@ class ReviewerAgent(BaseToolAgent):
             cancel_check=cancel_check,
             checkpoint_callback=checkpoint_callback,
             initial_messages=initial_messages,
+            output_model=ReviewerProtocolOutput,
         )

@@ -4,6 +4,7 @@ from typing import Any
 from openai.types.chat import ChatCompletionMessageParam
 
 from .base_tool_agent import BaseToolAgent
+from ..models.agent_protocol import PlannerProtocolOutput
 
 PLANNER_PROMPT = """
 你是 DevPilot 的 Planner Agent。
@@ -37,6 +38,8 @@ retrieve_code 返回的是候选上下文，
 }
 
 description 中的换行必须转义，保证整个回答是合法 JSON。
+步骤 id 必须是唯一的正整数；title/description 不得为空。description 应写明
+目标模块、公开行为、验证方式和依赖顺序；不能替 Coder 宣称实现或测试已完成。
 输出完整 JSON 后立即结束，不得再调用工具或追加解释。
 """
 
@@ -77,4 +80,5 @@ class PlannerAgent(BaseToolAgent):
             cancel_check=cancel_check,
             checkpoint_callback=checkpoint_callback,
             initial_messages=initial_messages,
+            output_model=PlannerProtocolOutput,
         )

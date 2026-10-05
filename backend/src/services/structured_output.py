@@ -11,6 +11,19 @@ import json
 from pydantic import BaseModel
 
 
+class AgentProtocolError(ValueError):
+    """! @brief 有界纠正后仍不符合角色协议，禁止向下游交接。"""
+
+
+def parse_protocol_output[StructuredModel: BaseModel](
+    text: str, output_model: type[StructuredModel],
+) -> StructuredModel:
+    """! @brief 严格解析角色协议；不提取围栏、不补字段、不转换错误类型。"""
+    if not text.strip():
+        raise ValueError("角色协议输出为空")
+    return output_model.model_validate_json(text, strict=True)
+
+
 def extract_json_block(
     text: str,
 ) -> str:
