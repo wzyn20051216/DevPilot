@@ -4,7 +4,10 @@
 放进隔离沙箱观察真实运行时行为。用机器可判的 stdout 标记代替"猜协议"，
 避免模型对隐式兼容协议推断不稳导致的反复返工。
 """
-from typing import Any
+import ast
+import hashlib
+import json
+from typing import Any, Literal
 
 from ..sandbox.docker_runner import run_in_sandbox
 
@@ -81,6 +84,7 @@ def _run_probe(
 def probe_runtime(
     repo_path: str,
     probes: list[dict[str, Any]],
+    mode: Literal["diagnostic", "reproducer"] = "diagnostic",
 ) -> dict[str, Any]:
     """! @brief 在隔离沙箱中运行一组运行时协议探针。
 
@@ -88,11 +92,17 @@ def probe_runtime(
     @param probes 探针列表，每个元素为
         ``{"name": str, "code": str, "expect_exception": str | None}``；
         ``expect_exception`` 可选，表示期望抛出的异常类型或消息子串。
+    @param mode diagnostic 仅观察；reproducer 还要求可机器判定的断言，
+    并拒绝吞掉 SystemExit/BaseException 的探针代码。
     @return ``{"probes": [...], "all_passed": bool}``；每条结果为
         ``{"name", "ok", "exception", "stdout_tail"}``。
     @raise ValueError 探针数量超过 8 或单个源码超过 4000 字符时。
     """
 
+    if mode not in {"diagnostic", "reproducer"}:
+        raise ValueError(f"未知 protocol_probe mode: {mode}")
+    if not probes:
+        raise ValueError("probes 不能为空")
     if len(probes) > _MAX_PROBES:
         raise ValueError(
             f"probes 数量不能超过 {_MAX_PROBES}，当前 {len(probes)}"
@@ -107,6 +117,8 @@ def probe_runtime(
             raise ValueError(
                 f"probe {name!r} 的 code 超过 {_MAX_CODE_CHARS} 字符"
             )
+        if mode == "reproducer":
+            _validate_reproducer(name, code, expect_exception)
         results.append(
             _run_probe(
                 repo_path=repo_path,
@@ -116,7 +128,57 @@ def probe_runtime(
             )
         )
 
+    canonical = json.dumps(
+        {"mode": mode, "probes": probes},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return {
         "probes": results,
         "all_passed": all(item["ok"] for item in results),
+        "mode": mode,
+        "definition_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
     }
+
+
+def _validate_reproducer(
+    name: str,
+    code: str,
+    expect_exception: object,
+) -> None:
+    """! @brief 验证 reproducer 确实断言公开行为且未吞关键异常。"""
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        raise ValueError(f"reproducer {name!r} 语法错误: {exc}") from exc
+    has_assert = any(isinstance(node, ast.Assert) for node in ast.walk(tree))
+    if not has_assert and not expect_exception:
+        raise ValueError(
+            f"reproducer {name!r} 必须包含 assert 或 expect_exception"
+        )
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        if node.type is None:
+            raise ValueError(f"reproducer {name!r} 不得使用 bare except")
+        caught: list[str] = []
+        targets = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                caught.append(target.id)
+            elif isinstance(target, ast.Attribute):
+                caught.append(target.attr)
+        forbidden = {"BaseException", "SystemExit"}.intersection(caught)
+        reraises = any(
+            isinstance(child, ast.Raise) and child.exc is None
+            for statement in node.body
+            for child in ast.walk(statement)
+        )
+        if forbidden and not reraises:
+            raise ValueError(
+                f"reproducer {name!r} 不得吞掉 {sorted(forbidden)}；"
+                "如需断言异常属性或 stdout，捕获后必须用 bare raise 原样重抛，"
+                "并用 expect_exception 表达公开异常契约"
+            )

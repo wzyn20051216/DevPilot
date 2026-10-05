@@ -14,6 +14,7 @@ from backend.src.agents.single_developer_agent import (
     SINGLE_DEVELOPER_PROBE_PROMPT,
     STRATEGY_OUTLINE_ADDENDUM,
     STRATEGY_PROBE_ADDENDUM,
+    STRATEGY_GUARD_ADDENDUM,
     SingleDeveloperAgent,
 )
 from backend.src.agents.strategy import AgentStrategy, decide_strategy
@@ -114,6 +115,32 @@ def test_behavior_semantics_enforce_probe(tmp_path: Path, question: str) -> None
     assert decision.mode == "probe_only"
 
 
+def test_behavior_keyword_overrides_documentation_exemption(tmp_path: Path) -> None:
+    """! @brief 文档引用不能使协议缺陷绕过前后复现门禁。"""
+
+    _write_lines(tmp_path / "module.py", 1)
+    decision = decide_strategy(
+        tmp_path, "修复 documentation 示例中的 TypeError", _settings()
+    )
+    assert decision.enforce_probe is True
+    assert decision.require_reproducer is True
+    assert decision.require_post_edit_probe is True
+
+
+def test_standard_bug_receives_reproducer_instructions(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    """! @brief 普通代码缺陷也必须获得与机器门禁一致的复现说明。"""
+
+    _write_lines(tmp_path / "module.py", 1)
+    monkeypatch.setattr(base_tool_agent, "create_client", lambda: object())
+    strategy = decide_strategy(tmp_path, "修复计算结果错误", _settings())
+    agent = SingleDeveloperAgent(str(tmp_path), False, strategy=strategy)
+    assert strategy.enforce_probe is False
+    assert STRATEGY_PROBE_ADDENDUM in agent.system_prompt
+    assert agent.workflow_contract.auto_replay_reproducer is True
+
+
 @pytest.mark.parametrize(
     "question",
     ["更新 README 文档", "修复字符串格式化", "调整 configuration 配置"],
@@ -207,14 +234,20 @@ def test_agent_assembles_adaptive_strategy(
         max_iterations=99,
         strategy=strategy,
     )
-    assert agent.allowed_tools == BASE_TOOLS | {"code_outline"}
+    assert agent.allowed_tools == BASE_TOOLS | {"code_outline", "record_candidates"}
     assert agent.system_prompt == (
-        SINGLE_DEVELOPER_CORE_PROMPT
+        SINGLE_DEVELOPER_CORE_PROMPT.replace(
+            "你最多有 14 轮工具交互。", "你最多有 9 轮工具交互。"
+        )
+        + STRATEGY_GUARD_ADDENDUM
         + STRATEGY_OUTLINE_ADDENDUM
         + SINGLE_DEVELOPER_PROBE_PROMPT
         + STRATEGY_PROBE_ADDENDUM
     )
     assert agent.max_iterations == 9
+    assert agent.workflow_contract is not None
+    assert agent.workflow_contract.candidate_count == 2
+    assert agent.workflow_contract.require_passing_test_after_edit is True
 
 
 def test_adaptive_real_world_row_records_strategy(
@@ -279,3 +312,34 @@ def test_adaptive_real_world_row_records_strategy(
     assert row["strategy"]["mode"] == "probe_only"
     assert row["strategy"]["reasons"]
     assert row["strategy"]["metrics"]["behavior_hits"] == ["typeerror"]
+    assert row["strategy"]["require_reproducer"] is True
+    assert row["strategy"]["require_post_edit_probe"] is True
+    assert row["workflow_compliance"] is None
+
+
+def test_real_workspace_enables_longpaths_before_checkout(
+    tmp_path: Path, monkeypatch: MonkeyPatch,
+) -> None:
+    """! @brief Windows 深层裁判目录应在写出源码前启用长路径支持。"""
+
+    from backend.src.evals import real_world
+
+    instance = real_world.SweBenchInstance(
+        instance_id="owner__repo-1", repo="owner/repo", base_commit="abc",
+        problem_statement="bug", gold_patch="", test_patch="",
+        fail_to_pass=(), pass_to_pass=(),
+    )
+    monkeypatch.setattr(real_world, "REAL_EVAL_ROOT", tmp_path / "results")
+    monkeypatch.setattr(real_world, "_cached_repository", lambda _: tmp_path / "cache")
+    monkeypatch.setattr(real_world, "_overlay_build_artifacts", lambda *_: 0)
+    calls: list[list[str]] = []
+
+    def run_git(arguments: list[str], **_: object) -> str:
+        calls.append(arguments)
+        return ""
+
+    monkeypatch.setattr(real_world, "_run_git", run_git)
+    real_world.create_real_workspace(instance, "run", "adaptive-verifier")
+    enabled = calls.index(["config", "core.longpaths", "true"])
+    assert enabled < calls.index(["checkout", "--detach", "abc"])
+    assert enabled < calls.index(["reset", "--hard"])

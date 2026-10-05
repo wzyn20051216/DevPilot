@@ -11,6 +11,7 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from .base_tool_agent import BaseToolAgent
 from .strategy import AgentStrategy
+from .workflow import WorkflowContract
 
 
 SINGLE_DEVELOPER_CORE_PROMPT = """
@@ -73,8 +74,22 @@ STRATEGY_OUTLINE_ADDENDUM = """
 """
 
 STRATEGY_PROBE_ADDENDUM = """
-本轮强制先探针后编辑：修改前必须用 protocol_probe 运行 Issue 中的真实输入，
-记录当前行为；修改后重跑同一探针，确认行为变化后才进入 run_test。
+本轮强制先探针后编辑：修改前必须用 protocol_probe(mode="reproducer")
+从 Issue 的公开入口运行真实输入，以 assert 或 expect_exception 精确表达返回值、
+stdout、异常/SystemExit 等契约；不得吞掉 BaseException 或 SystemExit。若必须检查
+SystemExit.code 或捕获前的 stdout，断言后用 bare raise 原样重抛，并同时填写
+expect_exception，让探针在修复前失败、修复后按公开契约通过。
+探针必须先失败；修改后原样重跑同一探针并通过，之后才进入 run_test。
+"""
+
+STRATEGY_GUARD_ADDENDUM = """
+本轮受机器工作流门禁约束：
+1. 修改前调用 record_candidates，给出两个不同修复位置，比较依据和回归风险；
+2. 若要求 reproducer，必须先取得失败证据；内核在编辑后自动原样重跑，
+   自动复验失败时根据真实结果修复，不得替换原始断言来绕过门禁；
+3. 每次编辑都会使先前测试和修改后探针失效；
+4. 最近一次编辑后必须让 run_test 通过，否则内核拒绝最终答案。
+不要把候选理解成随意猜测；应优先选择公开入口、现有测试约定和最小语义边界。
 """
 
 
@@ -124,6 +139,8 @@ class SingleDeveloperAgent(BaseToolAgent):
         use_outline = strategy.use_outline if strategy is not None else enhanced
         if use_outline:
             tools.add("code_outline")
+        if strategy is not None:
+            tools.add("record_candidates")
 
         if strategy is None:
             system_prompt = (
@@ -133,15 +150,30 @@ class SingleDeveloperAgent(BaseToolAgent):
             )
             effective_max_iterations = max_iterations
         else:
-            additions = []
+            additions = [STRATEGY_GUARD_ADDENDUM]
             if strategy.use_outline:
                 additions.append(STRATEGY_OUTLINE_ADDENDUM)
-            if strategy.enforce_probe:
+            if strategy.require_reproducer or strategy.enforce_probe:
                 additions.extend(
                     [SINGLE_DEVELOPER_PROBE_PROMPT, STRATEGY_PROBE_ADDENDUM]
                 )
-            system_prompt = SINGLE_DEVELOPER_CORE_PROMPT + "".join(additions)
             effective_max_iterations = strategy.max_iterations
+            adaptive_core_prompt = SINGLE_DEVELOPER_CORE_PROMPT.replace(
+                "你最多有 14 轮工具交互。",
+                f"你最多有 {effective_max_iterations} 轮工具交互。",
+            )
+            system_prompt = adaptive_core_prompt + "".join(additions)
+
+        workflow_contract = None
+        if strategy is not None:
+            workflow_contract = WorkflowContract(
+                require_code_change=True,
+                require_pre_edit_reproducer=strategy.require_reproducer,
+                require_post_edit_reproducer=strategy.require_post_edit_probe,
+                require_passing_test_after_edit=strategy.require_target_test,
+                candidate_count=strategy.candidate_count,
+                auto_replay_reproducer=True,
+            )
 
         super().__init__(
             repo_path=repo_path,
@@ -153,4 +185,5 @@ class SingleDeveloperAgent(BaseToolAgent):
             cancel_check=cancel_check,
             checkpoint_callback=checkpoint_callback,
             initial_messages=initial_messages,
+            workflow_contract=workflow_contract,
         )

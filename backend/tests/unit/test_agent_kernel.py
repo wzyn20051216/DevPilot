@@ -19,6 +19,7 @@ from pytest import MonkeyPatch
 from backend.src.agents import base_tool_agent
 from backend.src.agents.base_tool_agent import BaseToolAgent
 from backend.src.agents.code_agent import CodeAgent
+from backend.src.agents.workflow import WorkflowContract
 from backend.src.evals import runner
 from backend.src.tools import protocol_probe
 
@@ -494,9 +495,337 @@ def test_protocol_probe_code_too_long_raises() -> None:
         protocol_probe.probe_runtime(".", [{"name": "p", "code": "x" * 4001}])
 
 
+def test_reproducer_requires_assert_or_expected_exception() -> None:
+    """! @brief reproducer 不能只是打印观察结果。"""
+
+    with pytest.raises(ValueError, match="必须包含 assert"):
+        protocol_probe.probe_runtime(
+            ".",
+            [{"name": "weak", "code": "print('looks good')"}],
+            mode="reproducer",
+        )
+
+
+def test_reproducer_rejects_swallowed_system_exit() -> None:
+    """! @brief 公开 SystemExit 契约不能在探针内部被吞掉。"""
+
+    with pytest.raises(ValueError, match="不得吞掉"):
+        protocol_probe.probe_runtime(
+            ".",
+            [
+                {
+                    "name": "exit",
+                    "code": (
+                        "try:\n    raise SystemExit(0)\n"
+                        "except SystemExit:\n    pass\nassert True\n"
+                    ),
+                }
+            ],
+            mode="reproducer",
+        )
+
+
+def test_reproducer_allows_assert_then_reraise_system_exit(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """! @brief 可以检查 SystemExit.code，但必须把异常原样重抛给包装器。"""
+
+    monkeypatch.setattr(
+        protocol_probe,
+        "run_in_sandbox",
+        lambda **_: {
+            "returncode": 0,
+            "timed_out": False,
+            "stdout": "__PROBE_FAIL__: SystemExit 0\n",
+            "stderr": "",
+        },
+    )
+    result = protocol_probe.probe_runtime(
+        ".",
+        [
+            {
+                "name": "exit",
+                "code": (
+                    "try:\n    raise SystemExit(0)\n"
+                    "except SystemExit as exc:\n"
+                    "    assert exc.code == 0\n    raise\n"
+                ),
+                "expect_exception": "SystemExit 0",
+            }
+        ],
+        mode="reproducer",
+    )
+    assert result["all_passed"] is True
+
+
+# ---------------------------------------------------------------
+# E. Adaptive 工作流门禁
+# ---------------------------------------------------------------
+
+
+def test_workflow_denies_write_before_candidates(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """! @brief 未记录足量候选时，写工具不得触碰文件。"""
+
+    outcomes = [
+        _response(tool_calls=[_tool_call(name="replace_in_file", call_id="edit")]),
+    ]
+    contract = WorkflowContract(
+        require_code_change=True,
+        require_passing_test_after_edit=True,
+        candidate_count=2,
+    )
+    agent, _ = _build_agent(
+        monkeypatch,
+        outcomes,
+        max_iterations=1,
+        workflow_contract=contract,
+    )
+    executed: list[str] = []
+    monkeypatch.setattr(
+        base_tool_agent,
+        "execute_tool",
+        lambda tool_name, **_: executed.append(tool_name),
+    )
+
+    events = list(agent.run_stream("q"))
+
+    assert executed == []
+    assert events[-1].type == "error"
+    assert events[-1].data["workflow"]["progress"]["denied_writes"] == 1
+
+
+def test_workflow_accepts_same_reproducer_and_passing_test(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """! @brief 同一失败/通过探针加编辑后测试应允许最终完成。"""
+
+    candidate_args = json.dumps(
+        {
+            "candidates": [
+                {"location": "public", "rationale": "入口", "risk": "低"},
+                {"location": "helper", "rationale": "内部", "risk": "高"},
+            ],
+            "selected_index": 0,
+            "selection_reason": "公开入口契约最稳定",
+        }
+    )
+    probe_args = json.dumps(
+        {
+            "mode": "reproducer",
+            "probes": [{"name": "bug", "code": "assert public() == 1"}],
+        }
+    )
+    outcomes = [
+        _response(
+            tool_calls=[
+                _tool_call(candidate_args, "record_candidates", "candidates"),
+                _tool_call(probe_args, "protocol_probe", "pre"),
+            ]
+        ),
+        _response(tool_calls=[_tool_call(name="replace_in_file", call_id="edit")]),
+        _response(tool_calls=[_tool_call(probe_args, "protocol_probe", "post")]),
+        _response(tool_calls=[_tool_call(name="run_test", call_id="test")]),
+        _response(content="done"),
+    ]
+    contract = WorkflowContract(
+        require_code_change=True,
+        require_pre_edit_reproducer=True,
+        require_post_edit_reproducer=True,
+        require_passing_test_after_edit=True,
+        candidate_count=2,
+    )
+    agent, _ = _build_agent(
+        monkeypatch,
+        outcomes,
+        max_iterations=5,
+        workflow_contract=contract,
+    )
+    probe_results = iter([False, True])
+
+    def fake_execute(tool_name: str, **_: Any) -> dict[str, Any]:
+        if tool_name == "record_candidates":
+            return {"recorded": True, "candidate_count": 2, "selected_index": 0}
+        if tool_name == "protocol_probe":
+            return {
+                "mode": "reproducer",
+                "definition_sha256": "same",
+                "all_passed": next(probe_results),
+                "probes": [{"exception": "AssertionError"}],
+            }
+        if tool_name == "replace_in_file":
+            return {"changed": True, "file_path": "a.py"}
+        return {"passed": True, "returncode": 0}
+
+    monkeypatch.setattr(base_tool_agent, "execute_tool", fake_execute)
+    events = list(agent.run_stream("q"))
+
+    assert events[-1].type == "final"
+    assert events[-1].data["workflow"]["compliant"] is True
+
+
+def test_workflow_rejects_changed_reproducer_signature(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """! @brief 修改后换一条更容易通过的探针不能绕过门禁。"""
+
+    outcomes = [
+        _response(
+            tool_calls=[
+                _tool_call(name="record_candidates", call_id="candidates"),
+                _tool_call(name="protocol_probe", call_id="pre"),
+            ]
+        ),
+        _response(tool_calls=[_tool_call(name="replace_in_file", call_id="edit")]),
+        _response(tool_calls=[_tool_call(name="protocol_probe", call_id="post")]),
+        _response(tool_calls=[_tool_call(name="run_test", call_id="test")]),
+    ]
+    contract = WorkflowContract(
+        require_code_change=True,
+        require_pre_edit_reproducer=True,
+        require_post_edit_reproducer=True,
+        require_passing_test_after_edit=True,
+        candidate_count=2,
+    )
+    agent, _ = _build_agent(
+        monkeypatch,
+        outcomes,
+        max_iterations=4,
+        workflow_contract=contract,
+    )
+    probe_results = iter(
+        [
+            {"definition_sha256": "before", "all_passed": False},
+            {"definition_sha256": "after", "all_passed": True},
+        ]
+    )
+
+    def fake_execute(tool_name: str, **_: Any) -> dict[str, Any]:
+        if tool_name == "record_candidates":
+            return {"recorded": True, "candidate_count": 2, "selected_index": 0}
+        if tool_name == "protocol_probe":
+            return {
+                "mode": "reproducer",
+                "probes": [{"exception": "AssertionError"}],
+                **next(probe_results),
+            }
+        if tool_name == "replace_in_file":
+            return {"changed": True, "file_path": "a.py"}
+        return {"passed": True, "returncode": 0}
+
+    monkeypatch.setattr(base_tool_agent, "execute_tool", fake_execute)
+    events = list(agent.run_stream("q"))
+
+    assert events[-1].type == "error"
+    assert "同一 reproducer" in events[-1].message
+
+
 # ---------------------------------------------------------------
 # F. 检查点钩子与断点恢复
 # ---------------------------------------------------------------
+
+@pytest.mark.parametrize("post_passed", [True, False])
+def test_workflow_automatically_replays_frozen_probe(
+    monkeypatch: MonkeyPatch, post_passed: bool,
+) -> None:
+    """! @brief 模型遗漏复验时原样重跑，失败不能被通过的测试掩盖。"""
+
+    probe_args = {"mode": "reproducer", "probes": [
+        {"name": "public_contract", "code": "assert public() == 1"}
+    ]}
+    outcomes = [
+        _response(tool_calls=[
+            _tool_call(name="record_candidates", call_id="candidates"),
+            _tool_call(json.dumps(probe_args), "protocol_probe", "pre"),
+        ]),
+        _response(tool_calls=[
+            _tool_call(name="replace_in_file", call_id="edit1"),
+            _tool_call(name="replace_in_file", call_id="edit2"),
+            _tool_call(name="run_test", call_id="test"),
+        ]),
+        _response(content="done"),
+    ]
+    agent, client = _build_agent(
+        monkeypatch, outcomes, max_iterations=3,
+        workflow_contract=WorkflowContract(
+            require_code_change=True, require_pre_edit_reproducer=True,
+            require_post_edit_reproducer=True, require_passing_test_after_edit=True,
+            candidate_count=2, auto_replay_reproducer=True,
+        ),
+    )
+    agent.allowed_tools.add("protocol_probe")
+    probe_calls: list[dict[str, Any]] = []
+
+    def execute(tool_name: str, arguments: dict[str, Any], **_: Any) -> dict[str, Any]:
+        if tool_name == "record_candidates":
+            return {"recorded": True, "candidate_count": 2, "selected_index": 0}
+        if tool_name == "protocol_probe":
+            probe_calls.append(arguments)
+            return {"mode": "reproducer", "definition_sha256": "frozen",
+                    "all_passed": False if len(probe_calls) == 1 else post_passed,
+                    "probes": [{"exception": "AssertionError"}]}
+        if tool_name == "replace_in_file":
+            return {"changed": True, "file_path": "a.py"}
+        return {"passed": True, "returncode": 0}
+
+    monkeypatch.setattr(base_tool_agent, "execute_tool", execute)
+    events = list(agent.run_stream("q"))
+    assert probe_calls == [probe_args, probe_args]
+    assert events[-1].type == ("final" if post_passed else "error")
+    assert events[-1].data["workflow"]["compliant"] is post_passed
+    assert events[-1].data["workflow"]["progress"]["automatic_replays"] == 1
+    assert client.chat.completions.requests[-1]["tool_choice"] == (
+        "none" if post_passed else "auto"
+    )
+    replays = [event for event in events if event.type == "tool_result"
+               and event.data.get("execution_source") == "workflow_replay"]
+    assert len(replays) == 1
+    assert replays[0].data["arguments"] == probe_args
+    # 自动工具回合必须保留完整 assistant/tool 配对，供下一次模型调用消费。
+    messages = client.chat.completions.requests[-1]["messages"]
+    replay_assistant = next(index for index, message in enumerate(messages)
+                            if message.get("role") == "assistant"
+                            and any(call["id"].startswith("workflow_replay_")
+                                    for call in message.get("tool_calls", [])))
+    assert messages[replay_assistant + 1]["role"] == "tool"
+    assert messages[replay_assistant + 1]["tool_call_id"] == (
+        messages[replay_assistant]["tool_calls"][0]["id"]
+    )
+
+
+def test_full_test_pass_does_not_close_unfinished_probe_gate(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """! @brief 全量测试通过后仍须允许补齐缺失的复验工具。"""
+
+    outcomes = [
+        _response(tool_calls=[_tool_call(name="record_candidates", call_id="c")]),
+        _response(tool_calls=[_tool_call(name="replace_in_file", call_id="e")]),
+        _response(tool_calls=[_tool_call(name="run_test", call_id="t")]),
+        _response(content="done"),
+    ]
+    agent, client = _build_agent(
+        monkeypatch, outcomes, max_iterations=4,
+        workflow_contract=WorkflowContract(
+            require_code_change=True, require_post_edit_reproducer=True,
+            require_passing_test_after_edit=True,
+        ),
+    )
+
+    def execute(tool_name: str, **_: Any) -> dict[str, Any]:
+        if tool_name == "record_candidates":
+            return {"recorded": True, "candidate_count": 1, "selected_index": 0}
+        if tool_name == "replace_in_file":
+            return {"changed": True, "file_path": "a.py"}
+        return {"passed": True, "returncode": 0}
+
+    monkeypatch.setattr(base_tool_agent, "execute_tool", execute)
+    events = list(agent.run_stream("q"))
+    assert client.chat.completions.requests[-1]["tool_choice"] == "auto"
+    assert events[-1].type == "error"
+    assert "同一 reproducer" in events[-1].message
+
 
 def test_checkpoint_callback_called_each_iteration(monkeypatch: MonkeyPatch) -> None:
     """每轮工具执行后都应调用检查点，且消息列表单调增长。"""

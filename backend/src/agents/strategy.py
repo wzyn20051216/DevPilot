@@ -57,6 +57,10 @@ class AgentStrategy:
     mode: str
     reasons: list[str]
     metrics: dict[str, object]
+    require_reproducer: bool = False
+    require_post_edit_probe: bool = False
+    require_target_test: bool = True
+    candidate_count: int = 2
 
 
 def _source_file_signals(signals: list[str]) -> list[str]:
@@ -182,6 +186,11 @@ def decide_strategy(
 
     metrics["behavior_hits"] = behavior_hits
     metrics["non_behavior_hits"] = non_behavior_hits
+    # 除明确的文档/格式/配置任务外，代码修复都要求先用公开接口复现失败。
+    # enforce_probe 继续表示更强的协议类提示词，reproducer 则是内核门禁。
+    require_reproducer = enforce_probe or not bool(non_behavior_hits)
+    if require_reproducer and not enforce_probe:
+        reasons.append("代码行为修复要求修改前失败、修改后通过的同一 reproducer")
     if use_outline and enforce_probe:
         mode = "outline_and_probe"
     elif use_outline:
@@ -194,8 +203,12 @@ def decide_strategy(
     return AgentStrategy(
         use_outline=use_outline,
         enforce_probe=enforce_probe,
-        max_iterations=DEFAULT_MAX_ITERATIONS,
+        max_iterations=active_settings.strategy_guarded_max_iterations,
         mode=mode,
         reasons=reasons,
         metrics=metrics,
+        require_reproducer=require_reproducer,
+        require_post_edit_probe=require_reproducer,
+        require_target_test=True,
+        candidate_count=2,
     )

@@ -17,6 +17,7 @@ from .command_tool import run_command
 from .protocol_probe import probe_runtime
 from .test_tool import run_tests as run_test
 from .write_tool import replace_in_file, write_file
+from .workflow_tool import record_candidates
 
 
 MCP_REPOSITORY_TOOLS: set[str] = {
@@ -148,6 +149,11 @@ PROTOCOL_PROBE_DEFINITION: ChatCompletionFunctionToolParam = {
         "parameters": {
             "type": "object",
             "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["diagnostic", "reproducer"],
+                    "description": "reproducer 会强制断言并生成稳定定义签名",
+                },
                 "probes": {
                     "type": "array",
                     "maxItems": 8,
@@ -172,6 +178,42 @@ PROTOCOL_PROBE_DEFINITION: ChatCompletionFunctionToolParam = {
             "required": [
                 "probes",
             ],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+RECORD_CANDIDATES_DEFINITION: ChatCompletionFunctionToolParam = {
+    "type": "function",
+    "function": {
+        "name": "record_candidates",
+        "description": (
+            "修改代码前记录 1-4 个互不相同的修复位置，比较依据与风险，"
+            "并选出最符合现有实现和测试证据的方案。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string"},
+                            "rationale": {"type": "string"},
+                            "risk": {"type": "string"},
+                        },
+                        "required": ["location", "rationale", "risk"],
+                        "additionalProperties": False,
+                    },
+                },
+                "selected_index": {"type": "integer", "minimum": 0},
+                "selection_reason": {"type": "string"},
+            },
+            "required": ["candidates", "selected_index", "selection_reason"],
             "additionalProperties": False,
         },
     },
@@ -207,6 +249,7 @@ LOCAL_TOOL_DEFINITIONS: list[ChatCompletionFunctionToolParam] = [
     RUN_COMMAND_DEFINITION,
     PROTOCOL_PROBE_DEFINITION,
     CODE_OUTLINE_DEFINITION,
+    RECORD_CANDIDATES_DEFINITION,
 ]
 
 
@@ -322,6 +365,14 @@ def execute_tool(
         return probe_runtime(
             repo_path=repo_path,
             probes=arguments["probes"],
+            mode=arguments.get("mode", "diagnostic"),
+        )
+
+    if tool_name == "record_candidates":
+        return record_candidates(
+            candidates=arguments["candidates"],
+            selected_index=arguments["selected_index"],
+            selection_reason=arguments["selection_reason"],
         )
 
     if tool_name == "code_outline":

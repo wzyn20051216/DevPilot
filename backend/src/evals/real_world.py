@@ -344,6 +344,9 @@ def create_real_workspace(
     # 就要切到 base_commit）。对大仓库（pydicom 541 文件）省掉一次完整工作树
     # 重写，把「clone + checkout」从 300 秒超时降到约 20 秒。
     _run_git(["clone", "--no-hardlinks", "--no-checkout", str(cache), str(destination)])
+    # 深层实验目录在 Windows 可能超过 MAX_PATH；仅对独立工作区启用，
+    # 且必须先于首次 checkout/reset，避免裁判因文件缺失误判候选补丁。
+    _run_git(["config", "core.longpaths", "true"], cwd=destination)
     # 工作区不需要 remote：删除继承自 bare mirror 的 origin（指向 GitHub），
     # 避免测试框架或 Git 钩子隐式触发 fetch，在沙箱禁网下退出 128
     # （pallets-flask-5014 r2 实测）。工作区所需的全部提交已经在本地。
@@ -640,7 +643,7 @@ def _run_agent(
     enhanced = variant == "single_enhanced"
     with use_sandbox_profile(_sandbox_profile(instance)), use_write_guard(
         lambda path: bool(_protected_candidate_paths([path]))
-    ), use_syntax_guard(enhanced):
+    ), use_syntax_guard(enhanced or strategy is not None):
         if variant.startswith("single_"):
             return list(
                 SingleDeveloperAgent(
@@ -748,6 +751,14 @@ def evaluate_real_instance(
         event_errors.append(verification_exception)
     if not candidate_patch.strip():
         event_errors.append("Agent 未生成候选补丁")
+    workflow_compliance = next(
+        (
+            event.data.get("workflow")
+            for event in reversed(events)
+            if isinstance(event.data, dict) and event.data.get("workflow") is not None
+        ),
+        None,
+    )
     return {
         "instance_id": instance.instance_id,
         "repo": instance.repo,
@@ -760,6 +771,7 @@ def evaluate_real_instance(
         ),
         "variant": variant,
         "strategy": asdict(strategy) if strategy is not None else None,
+        "workflow_compliance": workflow_compliance,
         "repeat_index": repeat_index,
         "success": bool(verification["passed"]) and not event_errors,
         "tests_passed": bool(verification["passed"]),
@@ -787,8 +799,8 @@ def evaluate_real_instance(
 def _build_repeat_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """! @brief 按 (instance_id, variant) 聚合重复运行的 mean/std。
 
-    只对 success 比例、total_tokens、elapsed_seconds 三项做描述统计，作为
-    report.json 顶层的纯加法键，不改动 rows 的逐条结构。
+    对成功率、成本和 Adaptive 工作流合规性做描述统计，作为 report.json
+    顶层的纯加法键，不改动 rows 的逐条结构。
     """
 
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -809,6 +821,22 @@ def _build_repeat_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         success_rate = [1.0 if row["success"] else 0.0 for row in group]
         total_tokens = [float(row["total_tokens"]) for row in group]
         elapsed_seconds = [float(row["elapsed_seconds"]) for row in group]
+        workflow_rows = [
+            row["workflow_compliance"]
+            for row in group
+            if isinstance(row.get("workflow_compliance"), dict)
+        ]
+        workflow_compliant = [
+            1.0 if item.get("compliant") else 0.0 for item in workflow_rows
+        ]
+        denied_writes = sum(
+            int(item.get("progress", {}).get("denied_writes", 0) or 0)
+            for item in workflow_rows
+        )
+        rejected_finals = sum(
+            int(item.get("progress", {}).get("rejected_finals", 0) or 0)
+            for item in workflow_rows
+        )
         summary[f"{instance_id}__{variant}"] = {
             "instance_id": instance_id,
             "variant": variant,
@@ -818,6 +846,12 @@ def _build_repeat_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "elapsed_seconds": {
                 "mean": mean(elapsed_seconds),
                 "std": std(elapsed_seconds),
+            },
+            "workflow_compliance": {
+                "reported_runs": len(workflow_rows),
+                "rate": mean(workflow_compliant),
+                "denied_writes": denied_writes,
+                "rejected_finals": rejected_finals,
             },
         }
     return summary
@@ -871,6 +905,9 @@ def run_real_world_evaluation(
                         "recent_messages": settings.agent_recent_messages,
                         "history_summary_max_chars": (
                             settings.agent_history_summary_max_chars
+                        ),
+                        "strategy_guarded_max_iterations": (
+                            settings.strategy_guarded_max_iterations
                         ),
                     },
                     "repeats": repeats,

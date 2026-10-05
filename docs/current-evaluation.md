@@ -321,3 +321,11 @@ docker run --rm --mount "type=bind,source=E:/desktop/DevPilot/backend/data,targe
 按用户要求取消整批额外软预算后，原主比较完整续跑。为诊断唯一一次 Agent Token 截断，又追加四次双方统一 16 轮、无额外 Agent Token 上限的运行：Astropy 两组均失败，scikit-learn 两组均通过并完成流程，因此独立与端到端成功均为 1/2。这是已见题的单次预算诊断，不合并主实验，也不证明泛化或稳定收益。仅放宽资源不是全部失败的解释。
 
 十六次新运行合计 2,975,576 Token。此前 402 余额中断的 3,213 Token 单独保存、不计修复率；所有完整失败均保留。已核对补丁哈希、固定源码与公共 CSV/JSON 数值；没有追加排除失败节点。这里仍是文件级独立 verifier，不能作为官方 harness 的 resolved 成绩。配置、环境校准、限制与本机复核命令见 [完整配对报告](experiments/paired_verified_2026-10-05.md)、[十二次主实验 CSV](experiments/paired_verified_2026-10-05.csv) 和 [四次诊断 CSV](experiments/flash16_diagnostic_2026-10-05.csv)。
+
+## 动态策略执行链修复与单题确认（2026-10-05）
+
+本次让内核保存失败 reproducer 并在编辑后自动原样重跑，修复全量测试通过后仍缺验证却被关闭工具的收尾死锁；补齐普通缺陷的复现提示、行为关键词优先级与末段测试安排。后端回归为 **201 passed、15 skipped、0 failures**。
+
+在已见真实题 `scikit-learn__scikit-learn-26323` 上，首次模型运行的流程、复验和目标测试已通过，但独立裁判受 Windows 长路径限制而失败。首次报告如实保留；修复独立工作区的长路径配置后，同一补丁重放为 **189 passed**。随后从头确认运行得到 **success=true、tests_passed=true、workflow compliant=true**，同一探针由失败转为通过，Agent 目标测试 188 项、独立裁判 189 项全部通过。确认运行为 8 轮、87,529 Token、Agent 阶段 63.09 秒。
+
+这证明当前动态策略在该题上能够走完修复与验证链路，不证明已有 90% 以上总体成功率，不衡量前端、队列和发布流程；不与此前 12 次主实验合并。首次失败、同补丁重放、从头确认和冻结证据见 [实验报告](experiments/adaptive_e2e_2026-10-05.md) 与 [指标 JSON](experiments/adaptive_e2e_2026-10-05.json)。

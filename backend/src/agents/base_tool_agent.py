@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+from copy import deepcopy
 from collections.abc import Iterator
 from time import perf_counter
 from typing import Any, Callable
@@ -10,6 +11,7 @@ from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageFunctionToolCallParam,
     ChatCompletionMessageParam,
+    ChatCompletionMessageFunctionToolCall,
 )
 
 from ..config import settings
@@ -22,6 +24,7 @@ from ..models.agent_state import (
     ToolCallRecord,
 )
 from ..tools.registry import execute_tool, get_tool_definitions
+from .workflow import WorkflowContract, WorkflowProgress
 
 
 class BaseToolAgent:
@@ -39,6 +42,7 @@ class BaseToolAgent:
         cancel_check: Callable[[], bool] | None = None,
         checkpoint_callback: Callable[[str, list[dict[str, Any]]], None] | None = None,
         initial_messages: list[ChatCompletionMessageParam] | None = None,
+        workflow_contract: WorkflowContract | None = None,
     ) -> None:
         # 注意：不要再写成 self.xxx = xxx, (带逗号变 tuple)
         # 同时给 self 属性加显式注解，避免 Pyright 把 self.name
@@ -54,6 +58,8 @@ class BaseToolAgent:
         self.checkpoint_callback = checkpoint_callback
         # 恢复执行时的起始消息：默认 None，走现状的 system+user 构建路径。
         self.initial_messages = initial_messages
+        # None 保持所有历史 Agent/评测变体的原有完成语义。
+        self.workflow_contract = workflow_contract
         self.client: Any = create_client()
 
     def _cancellation_event(self, state: AgentState) -> AgentEvent:
@@ -344,6 +350,26 @@ class BaseToolAgent:
             last_edit_call = 0
             last_test_call = 0
             last_test_targeted = False
+            workflow = WorkflowProgress()
+            # 保存已被采信的失败探针参数，避免模型重新生成时改变断言或名称。
+            replay_arguments: dict[str, Any] | None = None
+            last_replayed_edit_call = 0
+            automatic_call_ids: set[str] = set()
+
+            def workflow_payload() -> dict[str, Any] | None:
+                """! @brief 返回当前工作流合规快照；旧变体不产生该字段。"""
+
+                if self.workflow_contract is None:
+                    return None
+                return workflow.payload(
+                    self.workflow_contract,
+                    has_changes=bool(state.modified_files),
+                    last_edit_call=last_edit_call,
+                    last_test_call=last_test_call,
+                    latest_test_passed=bool(
+                        state.test_report and state.test_report.passed
+                    ),
+                )
             # -------------------------
             # 3. Agent Loop
             # -------------------------
@@ -372,34 +398,89 @@ class BaseToolAgent:
                 )
                 active_tool_definitions = tool_definitions
                 tool_choice: str = "auto"
-                if full_test_passed:
+                current_workflow = workflow_payload()
+                workflow_ready = (
+                    current_workflow is None or current_workflow["compliant"]
+                )
+                adaptive_ready = bool(
+                    self.workflow_contract is not None
+                    and workflow_ready
+                    and state.modified_files
+                )
+                if (full_test_passed and workflow_ready) or adaptive_ready:
                     messages.append(
                         {
                             "role": "user",
                             "content": (
-                                "代码已修改且完整测试套件通过。不得再调用工具，"
+                                "代码修改已满足机器工作流契约。不得再调用工具，"
                                 "请立即简要总结修改和验证结果。"
                             ),
                         }
                     )
                     tool_choice = "none"
                 elif must_edit:
+                    write_blockers = (
+                        workflow.write_blockers(self.workflow_contract)
+                        if self.workflow_contract is not None
+                        else []
+                    )
+                    required_gate_tools: set[str] = set()
+                    if any("reproducer" in item for item in write_blockers):
+                        required_gate_tools.add("protocol_probe")
+                    if any("候选" in item for item in write_blockers):
+                        required_gate_tools.add("record_candidates")
                     active_tool_definitions = [
                         definition
                         for definition in tool_definitions
                         if definition["function"]["name"]
-                        in {"replace_in_file", "write_file"}
+                        in (
+                            required_gate_tools
+                            if required_gate_tools
+                            else {"replace_in_file", "write_file"}
+                        )
                     ]
                     if active_tool_definitions:
                         messages.append(
                             {
                                 "role": "user",
                                 "content": (
-                                    "定位预算已经结束。本轮必须立即调用写入工具"
-                                    "实施当前最可信的最小修复；不得继续搜索或只输出建议。"
+                                    (
+                                        "定位预算已经结束。先完成以下写入门禁："
+                                        + "；".join(write_blockers)
+                                        if write_blockers
+                                        else "定位预算已经结束。本轮必须立即调用写入工具"
+                                        "实施当前最可信的最小修复；不得继续搜索或只输出建议。"
+                                    )
                                 ),
                             }
                         )
+                elif current_workflow is not None and not workflow_ready:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"剩余工具轮次 {self.max_iterations - iteration + 1}；"
+                                "当前工作流待完成："
+                                + "；".join(current_workflow["blockers"])
+                                + "。优先完成复验和目标 run_test；验证失败时修复代码。"
+                            ),
+                        }
+                    )
+                    # 已完成复验但漏跑测试时，将最后三轮留给真实测试与修复。
+                    # 测试已有失败结果时仍开放工具，避免封死定位/编辑路径。
+                    if (
+                        state.modified_files
+                        and iteration >= self.max_iterations - 2
+                        and last_test_call <= last_edit_call
+                        and (
+                            not self.workflow_contract.require_post_edit_reproducer
+                            or workflow.post_edit_reproducer_call > last_edit_call
+                        )
+                    ):
+                        active_tool_definitions = [
+                            definition for definition in tool_definitions
+                            if definition["function"]["name"] == "run_test"
+                        ]
                 # 本轮实际开放的工具还要在执行层校验；仅缩小发送给模型的
                 # schema 不足以阻止兼容网关返回旧工具调用。
                 active_tool_names = {
@@ -495,6 +576,23 @@ class BaseToolAgent:
                 # 6. 没有 Tool Call → Agent 任务完成
                 # -------------------------
                 if not message.tool_calls:
+                    current_workflow = workflow_payload()
+                    if (
+                        current_workflow is not None
+                        and not current_workflow["compliant"]
+                    ):
+                        workflow.rejected_finals += 1
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "最终答案被工作流门禁拒绝，必须继续调用工具："
+                                    + "；".join(current_workflow["blockers"])
+                                ),
+                            }
+                        )
+                        self._emit_checkpoint(messages)
+                        continue
                     state.status = "completed"
                     state.answer = self._answer_with_test_evidence(
                         message.content or "",
@@ -517,6 +615,11 @@ class BaseToolAgent:
                                 "llm_seconds": state.llm_seconds,
                                 "tool_seconds": state.tool_seconds,
                             },
+                            **(
+                                {"workflow": current_workflow}
+                                if current_workflow is not None
+                                else {}
+                            ),
                         },
                     )
                     return
@@ -525,7 +628,9 @@ class BaseToolAgent:
                 # 7. 执行 Tool Calling
                 # -------------------------
                 handled_function_call = False
-                for tool_call in message.tool_calls:
+                # 内核复验复用同一执行/追踪/观测通道；不占用额外 LLM 轮次。
+                pending_calls = list(message.tool_calls)
+                for call_position, tool_call in enumerate(pending_calls):
                     # 类型收窄
                     if tool_call.type != "function":
                         continue
@@ -566,6 +671,31 @@ class BaseToolAgent:
                             raise PermissionError(f"本轮不允许调用工具 {tool_name}")
                         if tool_choice == "none":
                             raise PermissionError(f"本轮禁止调用任何工具：{tool_name}")
+                        if (
+                            tool_name == "protocol_probe"
+                            and must_edit
+                            and self.workflow_contract is not None
+                            and self.workflow_contract.require_pre_edit_reproducer
+                            and workflow.pre_edit_reproducer_signature is None
+                            and arguments.get("mode") != "reproducer"
+                        ):
+                            raise PermissionError(
+                                "修改截止轮次已到；当前只接受 "
+                                'protocol_probe(mode="reproducer") 的失败证据'
+                            )
+                        if (
+                            tool_name in {"write_file", "replace_in_file"}
+                            and self.workflow_contract is not None
+                        ):
+                            write_blockers = workflow.write_blockers(
+                                self.workflow_contract
+                            )
+                            if write_blockers:
+                                workflow.denied_writes += 1
+                                raise PermissionError(
+                                    "写入被工作流门禁拒绝："
+                                    + "；".join(write_blockers)
+                                )
                         result = execute_tool(
                             tool_name=tool_name,
                             arguments=arguments,
@@ -599,6 +729,53 @@ class BaseToolAgent:
                     # messages 的 observation 使用独立的可配置上限。
                     state.tool_calls.append(record)
 
+                    if (
+                        tool_name == "record_candidates"
+                        and isinstance(result, dict)
+                        and result.get("recorded")
+                    ):
+                        workflow.candidate_count_recorded = int(
+                            result.get("candidate_count", 0)
+                        )
+                        workflow.candidate_selected_index = int(
+                            result.get("selected_index", 0)
+                        )
+
+                    if (
+                        tool_name == "protocol_probe"
+                        and isinstance(result, dict)
+                        and result.get("mode") == "reproducer"
+                        and result.get("definition_sha256")
+                    ):
+                        signature = str(result["definition_sha256"])
+                        call_index = len(state.tool_calls)
+                        timed_out = any(
+                            probe.get("exception") == "timed_out"
+                            for probe in result.get("probes", [])
+                            if isinstance(probe, dict)
+                        )
+                        if not state.modified_files:
+                            if result.get("all_passed") is False and not timed_out:
+                                workflow.pre_edit_reproducer_signature = signature
+                                workflow.pre_edit_reproducer_call = call_index
+                                replay_arguments = deepcopy(arguments)
+                            else:
+                                workflow.notices.append(
+                                    "修改前 reproducer 必须稳定失败，当前结果未被采信"
+                                )
+                        elif (
+                            result.get("all_passed") is True
+                            and signature
+                            == workflow.pre_edit_reproducer_signature
+                            and call_index > last_edit_call
+                        ):
+                            workflow.post_edit_reproducer_signature = signature
+                            workflow.post_edit_reproducer_call = call_index
+                        else:
+                            workflow.notices.append(
+                                "修改后 reproducer 未通过或定义签名与修改前不同"
+                            )
+
                     # 11.1 记录已修改文件（write_file 工具）
                     if tool_name in {"write_file", "replace_in_file"} and isinstance(result, dict) and result.get("changed"):
                         modified_path = result.get("file_path")
@@ -606,6 +783,12 @@ class BaseToolAgent:
                             state.modified_files.append(modified_path)
                         last_edit_call = len(state.tool_calls)
                         full_test_passed = False
+                        # 每次真实编辑都使之前的测试与修改后探针证据失效。
+                        state.test_report = None
+                        last_test_call = 0
+                        last_test_targeted = False
+                        workflow.post_edit_reproducer_signature = None
+                        workflow.post_edit_reproducer_call = 0
 
                     # 11.2 记录测试报告（run_test 工具）
                     #     统一写进 state.test_report，不再使用不存在的
@@ -641,6 +824,11 @@ class BaseToolAgent:
                             isinstance(result, dict) and "error" in result
                         ),
                     }
+                    if tool_call.id in automatic_call_ids:
+                        event_data["execution_source"] = "workflow_replay"
+                    current_workflow = workflow_payload()
+                    if current_workflow is not None:
+                        event_data["workflow"] = current_workflow
                     # Tester 的 run_test 返回值是可信的机器事实。将精简的
                     # 结构化报告放入事件，供 Orchestrator 在 LLM 最终 JSON
                     # 格式有瑕疵时兜底，不携带未截断的任意工具输出。
@@ -698,6 +886,40 @@ class BaseToolAgent:
                             "content": observation,
                         }
                     )
+                    if (
+                        call_position == len(pending_calls) - 1
+                        and self.workflow_contract is not None
+                        and self.workflow_contract.auto_replay_reproducer
+                        and self.workflow_contract.require_post_edit_reproducer
+                        and replay_arguments is not None
+                        and last_edit_call > last_replayed_edit_call
+                        and workflow.post_edit_reproducer_call <= last_edit_call
+                        and "protocol_probe" in self.allowed_tools
+                    ):
+                        last_replayed_edit_call = last_edit_call
+                        workflow.automatic_replays += 1
+                        replay_call = ChatCompletionMessageFunctionToolCall(
+                            id=f"workflow_replay_{iteration}_{last_edit_call}",
+                            type="function",
+                            function={
+                                "name": "protocol_probe",
+                                "arguments": json.dumps(
+                                    replay_arguments, ensure_ascii=False
+                                ),
+                            },
+                        )
+                        replay_message: ChatCompletionAssistantMessageParam = {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [replay_call.model_dump()],
+                        }
+                        if settings.llm_model.startswith("deepseek-"):
+                            replay_message["reasoning_content"] = ""  # type: ignore[typeddict-unknown-key]
+                        messages.append(replay_message)
+                        automatic_call_ids.add(replay_call.id)
+                        pending_calls.append(replay_call)
+                        # 自动复验仅重放已授权工具；不能开放其它已关闭的工具。
+                        active_tool_names.add("protocol_probe")
 
                 if not handled_function_call:
                     state.status = "failed"
@@ -714,6 +936,32 @@ class BaseToolAgent:
             # -------------------------
             # 14. 达到最大迭代次数
             # -------------------------
+            current_workflow = workflow_payload()
+            if current_workflow is not None and not current_workflow["compliant"]:
+                state.status = "failed"
+                yield AgentEvent(
+                    type="error",
+                    agent=self.name,
+                    iteration=state.iteration,
+                    message=(
+                        "agent 达到最大迭代次数且工作流契约未满足："
+                        + "；".join(current_workflow["blockers"])
+                    ),
+                    data={
+                        "iteration": state.iteration,
+                        "tool_calls": [
+                            item.model_dump() for item in state.tool_calls
+                        ],
+                        "usage": self._usage_payload(state),
+                        "workflow": current_workflow,
+                        "timing": {
+                            "llm_seconds": state.llm_seconds,
+                            "tool_seconds": state.tool_seconds,
+                        },
+                    },
+                )
+                return
+
             # 工具轮数耗尽并不代表任务失败：最后一轮工具结果
             # 刚回填到上下文，模型还没获得根据它生成最终答案的机会。
             # 追加一次禁止工具的收尾请求，它不再扩大工具循环。
@@ -804,6 +1052,11 @@ class BaseToolAgent:
                         "llm_seconds": state.llm_seconds,
                         "tool_seconds": state.tool_seconds,
                     },
+                    **(
+                        {"workflow": current_workflow}
+                        if current_workflow is not None
+                        else {}
+                    ),
                 },
             )
             return

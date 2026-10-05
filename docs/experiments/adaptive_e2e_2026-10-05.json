@@ -1,0 +1,191 @@
+{
+  "date": "2026-10-05",
+  "scope": "已见单题链路回归；不能估计总体90%成功率",
+  "runs": [
+    {
+      "label": "smoke_20261005",
+      "run_id": "f9487a0db9d0464fa1aeace18b43ad97",
+      "model": "deepseek-v4-flash",
+      "agent_config": {
+        "reasoning_effort": null,
+        "token_budget": 0,
+        "tool_observation_max_chars": 10000,
+        "recent_messages": 12,
+        "history_summary_max_chars": 6000,
+        "strategy_guarded_max_iterations": 16
+      },
+      "audits": [
+        {
+          "instance_id": "scikit-learn__scikit-learn-26323",
+          "baseline_failed": true,
+          "gold_passed": true,
+          "unstable_pass_to_pass": []
+        }
+      ],
+      "row": {
+        "instance_id": "scikit-learn__scikit-learn-26323",
+        "variant": "single_adaptive",
+        "success": false,
+        "tests_passed": false,
+        "error": "Verifier CalledProcessError: Command '['git', 'reset', '--hard']' returned non-zero exit status 128.",
+        "workflow_compliance": {
+          "contract": {
+            "require_code_change": true,
+            "require_pre_edit_reproducer": true,
+            "require_post_edit_reproducer": true,
+            "require_passing_test_after_edit": true,
+            "candidate_count": 2,
+            "auto_replay_reproducer": true
+          },
+          "progress": {
+            "candidate_count_recorded": 2,
+            "candidate_selected_index": 0,
+            "pre_edit_reproducer_signature": "7b8fd55b977b2f8887742f6b2a8d6c8186f4440334a4c1d2b92ea1b98438b74b",
+            "pre_edit_reproducer_call": 9,
+            "post_edit_reproducer_signature": "7b8fd55b977b2f8887742f6b2a8d6c8186f4440334a4c1d2b92ea1b98438b74b",
+            "post_edit_reproducer_call": 14,
+            "denied_writes": 0,
+            "rejected_finals": 0,
+            "automatic_replays": 1,
+            "notices": [
+              "修改前 reproducer 必须稳定失败，当前结果未被采信"
+            ]
+          },
+          "compliant": true,
+          "blockers": []
+        },
+        "iterations": 11,
+        "total_tokens": 103407,
+        "elapsed_seconds": 84.043691,
+        "tool_calls": 15,
+        "patch_sha256": "dbf960f79f1a1f1885e8a9eec97da4ddd2dfe055c04f7f140e815969380ed301",
+        "patch_bytes": 587,
+        "excluded_candidate_paths": [],
+        "excluded_unstable_tests": []
+      },
+      "terminal_event": "final",
+      "test_stdout": [
+        "........................................................................ [ 38%]\n........................................................................ [ 76%]\n............................................                             [100%]\n188 passed in 1.75s\n"
+      ],
+      "independent_test_stdout": [],
+      "source_verified": true,
+      "patch_verified": true
+    },
+    {
+      "label": "confirm_20261005",
+      "run_id": "4ed42e2982b646bfbe0015bbe93cfd8f",
+      "model": "deepseek-v4-flash",
+      "agent_config": {
+        "reasoning_effort": null,
+        "token_budget": 0,
+        "tool_observation_max_chars": 10000,
+        "recent_messages": 12,
+        "history_summary_max_chars": 6000,
+        "strategy_guarded_max_iterations": 16
+      },
+      "audits": [
+        {
+          "instance_id": "scikit-learn__scikit-learn-26323",
+          "baseline_failed": true,
+          "gold_passed": true,
+          "unstable_pass_to_pass": []
+        }
+      ],
+      "row": {
+        "instance_id": "scikit-learn__scikit-learn-26323",
+        "variant": "single_adaptive",
+        "success": true,
+        "tests_passed": true,
+        "error": null,
+        "workflow_compliance": {
+          "contract": {
+            "require_code_change": true,
+            "require_pre_edit_reproducer": true,
+            "require_post_edit_reproducer": true,
+            "require_passing_test_after_edit": true,
+            "candidate_count": 2,
+            "auto_replay_reproducer": true
+          },
+          "progress": {
+            "candidate_count_recorded": 2,
+            "candidate_selected_index": 0,
+            "pre_edit_reproducer_signature": "f483ff080c4cb88d91c388e4c39d45b37ba47ea2bf51355d435987a2d101ff44",
+            "pre_edit_reproducer_call": 7,
+            "post_edit_reproducer_signature": "f483ff080c4cb88d91c388e4c39d45b37ba47ea2bf51355d435987a2d101ff44",
+            "post_edit_reproducer_call": 11,
+            "denied_writes": 0,
+            "rejected_finals": 0,
+            "automatic_replays": 1,
+            "notices": [
+              "修改前 reproducer 必须稳定失败，当前结果未被采信"
+            ]
+          },
+          "compliant": true,
+          "blockers": []
+        },
+        "iterations": 8,
+        "total_tokens": 87529,
+        "elapsed_seconds": 63.085518,
+        "tool_calls": 12,
+        "patch_sha256": "dbf960f79f1a1f1885e8a9eec97da4ddd2dfe055c04f7f140e815969380ed301",
+        "patch_bytes": 587,
+        "excluded_candidate_paths": [],
+        "excluded_unstable_tests": []
+      },
+      "terminal_event": "final",
+      "test_stdout": [
+        "........................................................................ [ 38%]\n........................................................................ [ 76%]\n............................................                             [100%]\n188 passed in 1.64s\n"
+      ],
+      "independent_test_stdout": [
+        "........................................................................ [ 38%]\n........................................................................ [ 76%]\n.............................................                            [100%]\n189 passed in 5.11s\n"
+      ],
+      "source_verified": true,
+      "patch_verified": true
+    }
+  ],
+  "total_llm_runs": 2,
+  "total_tokens": 190936,
+  "first_candidate_replay": {
+    "original_success": false,
+    "original_error": "Verifier CalledProcessError: Command '['git', 'reset', '--hard']' returned non-zero exit status 128.",
+    "patch_sha256": "dbf960f79f1a1f1885e8a9eec97da4ddd2dfe055c04f7f140e815969380ed301",
+    "additional_llm_calls": 0,
+    "verifier_source_sha256": "03897a001291b39331738bf37829edf1bf26dbae06f19daddabef8e313599a50",
+    "success_after_verifier_repair": true,
+    "verification": {
+      "passed": true,
+      "targets": [
+        "sklearn/compose/tests/test_column_transformer.py"
+      ],
+      "ignored_environment_failures": [],
+      "unexpected_failures": [],
+      "results": [
+        {
+          "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--color=no",
+            "-r",
+            "fE",
+            "sklearn/compose/tests/test_column_transformer.py"
+          ],
+          "returncode": 0,
+          "timed_out": false,
+          "stdout": "........................................................................ [ 38%]\n........................................................................ [ 76%]\n.............................................                            [100%]\n189 passed in 6.02s\n",
+          "stderr": "",
+          "passed": true,
+          "sandboxed": true
+        }
+      ]
+    }
+  },
+  "backend_regression": {
+    "passed": 201,
+    "skipped": 15,
+    "failed": 0
+  }
+}
