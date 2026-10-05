@@ -558,7 +558,9 @@ def verify_real_patch(
     failed_nodes_raw = _failed_pytest_nodes(result, normalize=False)
     unexpected_failures = set(failed_nodes_normalized).difference(excluded_targets)
     calibrated_pass = bool(result["passed"]) or (
-        bool(failed_nodes_normalized)
+        # 只容忍已知测试失败（pytest exit=1）；收集/内部错误不是有效验收。
+        result.get("returncode") == 1
+        and bool(failed_nodes_normalized)
         and not unexpected_failures
         and not bool(result.get("timed_out"))
     )
@@ -601,7 +603,9 @@ def audit_real_instance(instance: SweBenchInstance, run_id: str) -> dict[str, An
     baseline_failures_set = set(baseline_failures)
     gold_unexpected = set(gold_failures).intersection(fail_to_pass_normalized)
     gold_passed = bool(gold["passed"]) or (
-        bool(gold_failures)
+        # 收集失败不能因「未出现 FAIL_TO_PASS 节点」被误当作参考修复通过。
+        gold.get("returncode") == 1
+        and bool(gold_failures)
         and not gold_unexpected
         and not bool(gold.get("timed_out"))
     )
