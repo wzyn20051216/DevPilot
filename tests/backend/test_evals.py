@@ -524,6 +524,15 @@ def test_full_experiment_uses_one_run_id_and_saves_config(
 
     monkeypatch.setattr(runner, "EXPERIMENT_ROOT", tmp_path / "experiments")
     monkeypatch.setattr(runner, "evaluate_case", fake_evaluate_case)
+    monkeypatch.setattr(
+        runner,
+        "collect_git_provenance",
+        lambda: {
+            "git_commit": "a" * 40,
+            "git_dirty": False,
+            "dirty_paths": [],
+        },
+    )
 
     run_id = runner.run_full_experiment(repeats=2)
     assert len(calls) == len(load_benchmark_cases()) * len(VARIANTS) * 2
@@ -536,8 +545,26 @@ def test_full_experiment_uses_one_run_id_and_saves_config(
     assert config["repeats"] == 2
     assert config["benchmark_cases"] == len(load_benchmark_cases())
     assert len(config["dataset_sha256"]) == 64
+    assert len(config["implementation_sha256"]) == 64
+    assert len(config["git_commit"]) == 40
+    assert config["git_dirty"] is False
+    assert config["dirty_paths"] == []
     assert config["random_seed"] == 42
     assert config["variants"] == list(VARIANTS)
+    assert config["variant_design"]["single_no_rag"] == {
+        "architecture": "single_agent",
+        "rag_enabled": False,
+        "strategy": "static_baseline",
+    }
+    assert config["variant_design"]["multi_rag"]["rag_enabled"] is True
+    assert config["experiment_strategy"] == "fixed_ablation"
+    assert config["production_defaults"]["execution_mode"] == "multi_rag"
+    assert config["verification"]["truth_source"] == (
+        "independent_sandbox_verifier"
+    )
+    assert config["verification"]["success_rule"] == (
+        "tests_passed_and_no_agent_error"
+    )
     assert config["agent_recent_messages"] >= 4
     assert config["tool_observation_max_chars"] >= 2_000
 

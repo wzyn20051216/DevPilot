@@ -10,9 +10,10 @@ import json
 import platform
 import shutil
 import subprocess
-from fnmatch import fnmatch
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from fnmatch import fnmatch
+from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -26,6 +27,7 @@ from backend.src.database.evaluation_repository import evaluation_repository
 from backend.src.models.agent_state import AgentEvent
 from backend.src.rag.embedder import MODEL_NAME
 from backend.src.tools.test_tool import run_tests
+
 from .dataset import (
     PROJECT_ROOT,
     calculate_dataset_fingerprint,
@@ -38,12 +40,107 @@ from .models import BenchmarkCase, EvaluationResult, EvaluationVariant
 
 EVAL_WORKSPACE_ROOT = PROJECT_ROOT / "artifacts" / "eval_workspaces"
 EXPERIMENT_ROOT = PROJECT_ROOT / "artifacts" / "experiments"
+REPOSITORY_ROOT = PROJECT_ROOT.parent
 VARIANTS: tuple[EvaluationVariant, ...] = (
     "single_no_rag",
     "single_rag",
     "multi_no_rag",
     "multi_rag",
 )
+
+# 正式实验使用固定消融设计，不受生产环境动态路由开关影响。将设计随配置
+# 一起保存，避免报告只写 variant 名称却没有说明实际 Agent/RAG 策略。
+VARIANT_DESIGN: dict[EvaluationVariant, dict[str, object]] = {
+    "single_no_rag": {
+        "architecture": "single_agent",
+        "rag_enabled": False,
+        "strategy": "static_baseline",
+    },
+    "single_rag": {
+        "architecture": "single_agent",
+        "rag_enabled": True,
+        "strategy": "static_baseline",
+    },
+    "multi_no_rag": {
+        "architecture": "multi_agent",
+        "rag_enabled": False,
+        "strategy": "planner_coder_tester_reviewer",
+    },
+    "multi_rag": {
+        "architecture": "multi_agent",
+        "rag_enabled": True,
+        "strategy": "planner_coder_tester_reviewer",
+    },
+}
+
+IMPLEMENTATION_PATHS = (
+    Path("backend/src"),
+    Path("research/evals"),
+    Path("pyproject.toml"),
+    Path("uv.lock"),
+    Path("backend/Dockerfile"),
+    Path("backend/docker/sandbox.Dockerfile"),
+)
+
+
+def calculate_implementation_fingerprint() -> str:
+    """! @brief 计算本轮被测实现与运行环境定义的稳定源码指纹。"""
+
+    digest = sha256()
+    files: list[Path] = []
+    for relative in IMPLEMENTATION_PATHS:
+        path = REPOSITORY_ROOT / relative
+        if path.is_file():
+            files.append(path)
+        elif path.is_dir():
+            files.extend(item for item in path.rglob("*") if item.is_file())
+
+    for path in sorted(files):
+        relative = path.relative_to(REPOSITORY_ROOT)
+        if any(part in {"__pycache__", ".pytest_cache"} for part in relative.parts):
+            continue
+        if path.suffix in {".pyc", ".pyo"}:
+            continue
+        digest.update(relative.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def collect_git_provenance() -> dict[str, object]:
+    """! @brief 记录提交和相关源码脏状态，保证实验结果可以追溯。"""
+
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPOSITORY_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            [
+                "git",
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--",
+                *(path.as_posix() for path in IMPLEMENTATION_PATHS),
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return {"git_commit": None, "git_dirty": None, "dirty_paths": []}
+
+    return {
+        "git_commit": commit,
+        "git_dirty": bool(status),
+        "dirty_paths": status,
+    }
 
 
 def _initialize_git_repository(workspace: Path) -> None:
@@ -435,6 +532,7 @@ def save_experiment_config(
     experiment_dir = EXPERIMENT_ROOT / run_id
     experiment_dir.mkdir(parents=True, exist_ok=False)
     config_path = experiment_dir / "config.json"
+    provenance = collect_git_provenance()
     payload = {
         "run_id": run_id,
         "created_at": datetime.now(UTC).isoformat(),
@@ -452,7 +550,25 @@ def save_experiment_config(
         "benchmark_cases": len(cases),
         "case_ids": [case.id for case in cases],
         "dataset_sha256": calculate_dataset_fingerprint(),
+        "implementation_sha256": calculate_implementation_fingerprint(),
+        **provenance,
         "variants": list(variants),
+        "variant_design": {
+            variant: VARIANT_DESIGN[variant]
+            for variant in variants
+        },
+        "experiment_strategy": "fixed_ablation",
+        "production_defaults": {
+            "execution_mode": "multi_rag",
+            "rag_mode": settings.rag_mode,
+            "strategy_router_enabled": settings.strategy_router_enabled,
+        },
+        "verification": {
+            "truth_source": "independent_sandbox_verifier",
+            "workspace_policy": "fresh_fixture_plus_candidate_source_overlay",
+            "protected_patterns": list(VERIFIER_PROTECTED_PATTERNS),
+            "success_rule": "tests_passed_and_no_agent_error",
+        },
         "rag": "BM25 + Embedding + RRF",
         "embedding_model": MODEL_NAME,
         "python_version": platform.python_version(),
