@@ -7,6 +7,7 @@
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -562,6 +563,15 @@ def save_experiment_config(
             "execution_mode": "multi_rag",
             "rag_mode": settings.rag_mode,
             "strategy_router_enabled": settings.strategy_router_enabled,
+        },
+        "compute_environment": {
+            name: os.environ.get(name)
+            for name in (
+                "OPENBLAS_NUM_THREADS",
+                "OMP_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "TOKENIZERS_PARALLELISM",
+            )
         },
         "verification": {
             "truth_source": "independent_sandbox_verifier",

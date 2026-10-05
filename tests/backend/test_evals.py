@@ -533,6 +533,10 @@ def test_full_experiment_uses_one_run_id_and_saves_config(
             "dirty_paths": [],
         },
     )
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
+    monkeypatch.setenv("OMP_NUM_THREADS", "1")
+    monkeypatch.setenv("MKL_NUM_THREADS", "1")
+    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")
 
     run_id = runner.run_full_experiment(repeats=2)
     assert len(calls) == len(load_benchmark_cases()) * len(VARIANTS) * 2
@@ -559,6 +563,12 @@ def test_full_experiment_uses_one_run_id_and_saves_config(
     assert config["variant_design"]["multi_rag"]["rag_enabled"] is True
     assert config["experiment_strategy"] == "fixed_ablation"
     assert config["production_defaults"]["execution_mode"] == "multi_rag"
+    assert config["compute_environment"] == {
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "TOKENIZERS_PARALLELISM": "false",
+    }
     assert config["verification"]["truth_source"] == (
         "independent_sandbox_verifier"
     )
