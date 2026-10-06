@@ -1,0 +1,5 @@
+# 发布结果与基线 fixture 使用 LF，保证 Windows/Linux 检出的字节指纹一致。
+research/results/latest/*.json text eol=lf
+research/results/latest/*.csv text eol=lf
+research/results/latest/*.md text eol=lf
+research/benchmarks/** text eol=lf

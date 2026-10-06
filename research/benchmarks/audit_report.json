@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-03T06:29:15.427337+00:00",
+  "generated_at": "2026-10-05T13:32:43.919479+00:00",
   "dataset_sha256": "0d766f28c4d93e5b7b82e3cc59afd562758e41528270ff56fe854628d12f9f58",
   "case_count": 12,
   "difficulty_counts": {
@@ -26,7 +26,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 2.308042
+      "elapsed_seconds": 1.642034
     },
     {
       "case_id": "cache_expiration",
@@ -36,7 +36,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 2.657158
+      "elapsed_seconds": 1.60347
     },
     {
       "case_id": "config_timeout",
@@ -46,7 +46,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 2.133495
+      "elapsed_seconds": 1.933048
     },
     {
       "case_id": "email_normalization",
@@ -56,7 +56,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 2.237226
+      "elapsed_seconds": 1.46199
     },
     {
       "case_id": "inventory_removal",
@@ -66,7 +66,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 1.935943
+      "elapsed_seconds": 1.378079
     },
     {
       "case_id": "java_inventory",
@@ -76,7 +76,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 2.030209,
+      "elapsed_seconds": 2.640044,
       "timed_out": false,
       "baseline_stderr": ""
     },
@@ -88,7 +88,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 1.70103
+      "elapsed_seconds": 1.430463
     },
     {
       "case_id": "pagination_options",
@@ -98,7 +98,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 1.556789
+      "elapsed_seconds": 1.405497
     },
     {
       "case_id": "py_pipeline",
@@ -108,7 +108,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 1.551477
+      "elapsed_seconds": 1.511669
     },
     {
       "case_id": "request_timeout",
@@ -118,7 +118,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 1.611578
+      "elapsed_seconds": 1.196762
     },
     {
       "case_id": "role_permissions",
@@ -128,7 +128,7 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 1.909503
+      "elapsed_seconds": 1.015011
     },
     {
       "case_id": "ts_report",
@@ -138,9 +138,15 @@
       "verification_target_exists": true,
       "baseline_failed": true,
       "baseline_exit_code": 1,
-      "elapsed_seconds": 2.710838,
+      "elapsed_seconds": 2.441428,
       "timed_out": false,
       "baseline_stderr": ""
     }
-  ]
+  ],
+  "workstation_dataset_sha256": "5a6e8734b34d023cc01226030d26cda8d095afe306d63513c706ddd979e385fc",
+  "fingerprint_normalization": {
+    "date": "2026-10-06",
+    "line_endings": "LF",
+    "note": "发布 fixture 的换行规范化；原始工作站指纹保留，基线判定与数量未改写"
+  }
 }

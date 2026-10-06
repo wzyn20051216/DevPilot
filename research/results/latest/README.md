@@ -29,4 +29,6 @@
 
 ## 发布一致性
 
-[manifest.json](manifest.json) 保存内容指纹。工作台读取对应运行快照 `backend/src/assets/evaluation/latest.json`，默认只显示这次真实缺陷批次，避免混入旧实验。
+[manifest.json](manifest.json) 保存内容指纹。后端只读结果 API 读取对应运行快照 `backend/src/assets/evaluation/latest.json`，默认返回这次真实缺陷批次，避免混入旧实验；当前前端已移除独立评测页面。
+
+Git 发布的 JSON、CSV 与 Markdown 统一使用 LF 换行，确保不同系统检出后可核对清单。原始 Windows 工作站的 CRLF 文件指纹另保存在清单的 `workstation_files_sha256`，作为原始字节记录；换行规范化不改变实验数值。`evidence/` 为本地证据目录，未纳入 Git 仓库，其冻结指纹继续保留在清单中。
