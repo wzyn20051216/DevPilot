@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .playwright-cli/
+.playwright-mcp/
 .env
 .env.local
 backend/.env
@@ -25,3 +26,6 @@ research/benchmarks/repos/**/.git-local-backup/
 .pytest_tmp/
 research/artifacts/
 research/results/latest/evidence/
+
+# 飞书编辑时生成的根目录调试截图，正式配图保留在 docs/ 内。
+/feishu-*.png

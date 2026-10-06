@@ -2,7 +2,7 @@
 
 DevPilot 是面向代码仓库的智能研发协作平台，提供需求分析、计划审批、代码修改、隔离验证、差异审查和 GitHub Draft PR 发布。支持单 Agent 与多角色执行，使用持久化任务、SSE 事件和工具轨迹记录整个过程。
 
-使用说明见 [用户说明书](docs/user-manual.md)，部署配置见 [部署指南](docs/deployment.md)，开发与验证见 [开发指南](docs/development.md)。
+项目流程、架构与实验口径见 [技术知识库（飞书同步版，含 10 张配图）](docs/technical-knowledge-base.md)。使用说明见 [用户说明书](docs/user-manual.md)，部署配置见 [部署指南](docs/deployment.md)，开发与验证见 [开发指南](docs/development.md)。
 
 ## 功能
 
@@ -14,7 +14,7 @@ DevPilot 是面向代码仓库的智能研发协作平台，提供需求分析�
 - API Key、仓库目录授权、角色工具权限和 Docker 沙箱资源限制。
 - API/Worker 分离，SQLite/MySQL 状态存储和 SQL/Redis 队列。
 - Diff、测试与评审结果、发布预览和 Draft PR 确认。
-- 已发布最终评测结果页面。
+- 最终评测结果包与只读结果 API；当前前端提供工作台和任务详情。
 
 ## Docker 启动
 
@@ -77,6 +77,6 @@ deploy/             可选部署模板
 
 ## 最终评测
 
-真实缺陷评测采用 9 道有效 SWE-bench Verified Issue，每题重复 2 次，共 18 次；本项目文件级独立测试通过 **14/18（77.8%）**，流程完整成功 **10/18（55.6%）**。指标定义及逐次数据见 [最终结果包](research/results/latest/README.md)，页面直接读取同一发布批次。
+真实缺陷评测采用 9 道有效 SWE-bench Verified Issue，每题重复 2 次，共 18 次；本项目文件级独立测试通过 **14/18（77.8%）**，流程完整成功 **10/18（55.6%）**。指标定义及逐次数据见 [最终结果包](research/results/latest/README.md)，后端结果 API 读取同一发布批次。
 
 RAG、服务负载及取消验证的最后结果也集中在该目录，不再混用历史批次。Git 中保留代码版本记录，项目目录内仅发布最后结果。

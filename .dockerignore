@@ -2,6 +2,7 @@
 .github
 .venv
 .playwright-cli
+.playwright-mcp
 .pytest_cache
 .vscode
 **/__pycache__
@@ -19,3 +20,4 @@ garden-gpt-image-2
 .workbuddy
 .env
 .env.local
+feishu-*.png

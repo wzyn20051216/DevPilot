@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>DevPilot 用户说明书</title><style>body{font:16px/1.8 "Microsoft YaHei",sans-serif;color:#20252b;max-width:920px;margin:48px auto;padding:0 32px}h1,h2,h3{color:#000;line-height:1.4}h1{font-size:32px}h2{margin-top:42px;border-bottom:1px solid #ddd;padding-bottom:8px}table{width:100%;border-collapse:collapse;margin:20px 0}th,td{border:1px solid #ddd;padding:10px 14px;text-align:left}th{background:#f2f4f5}pre{background:#f4f5f7;padding:18px;overflow:auto;line-height:1.6}code{font-family:Consolas,monospace}img{max-width:100%;height:auto;border:1px solid #ddd}a{color:#2260a6}@media print{body{margin:0;max-width:none;font-size:11pt}h2,h3{page-break-after:avoid}pre,table,img{page-break-inside:avoid}}</style><body><h1>DevPilot 用户说明书</h1>
-<p>版本 1.0　更新日期 2026 年 10 月 5 日</p>
+<p>版本 1.0　更新日期 2026 年 10 月 6 日</p>
 <p>本说明书面向使用 DevPilot 处理代码仓库需求的开发者与项目负责人。阅读后可以完成部署、连接模型、创建任务、审批计划、观察执行、审查修改并发布 Draft PR。</p>
 <h2>一 项目介绍</h2>
 <p>DevPilot 把代码研发任务组织成可审批、可观察的操作流程。用户提供本地需求或 GitHub Issue，系统分析仓库并生成计划；用户批准后，Agent 调用代码工具和 Docker 沙箱执行任务。修改结果以 Diff、测试记录与评审内容呈现，由用户确认后进入 GitHub 发布流程。</p>
@@ -50,8 +50,8 @@
 <td>先生成发布预览，再确认创建 Draft PR</td>
 </tr>
 <tr>
-<td>评测页面</td>
-<td>查看当前发布批次的独立测试与流程成功指标</td>
+<td>评测结果</td>
+<td>阅读最终结果包，或调用后端只读结果 API</td>
 </tr>
 </tbody>
 </table>
@@ -108,7 +108,7 @@ docker compose ps
 <p>工具轨迹可帮助理解 Agent 阅读了哪些文件、进行了什么修改、执行了哪些验证。耗时与模型 Token 属于执行记录，可以用于观察当前任务用量。</p>
 <h2>六 检索与执行模式</h2>
 <p>Hybrid Code RAG 对源码进行结构或窗口分块，组合关键词检索、向量检索和排名融合，为代码阅读提供相关片段。Python 结构导航还可呈现类、函数与行号，帮助定位大型模块。</p>
-<p>用户可按界面选项选择单 Agent 或多角色模式，以及是否使用检索。部署配置 <code>RAG_MODE=auto</code> 时，系统依据仓库规模和查询定位信号决定检索策略。动态工具策略结合语言分布、目标文件规模与问题特征选择结构导航和行为探针。</p>
+<p>当前工作台提供 <code>multi_rag</code> 与 <code>multi_no_rag</code>，默认多角色＋检索；后端 API 和研究工具仍保留 <code>single_*</code> 变体。<code>RAG_MODE=auto</code> 的仓库规模与查询信号启发式仅用于 <code>single_*</code> 执行策略。多角色模式由执行模式决定是否暴露检索工具，工具可见不代表模型一定调用过。单 Agent 的动态工具策略结合语言分布、目标文件规模与问题特征选择结构导航和行为探针。</p>
 <p>行为复现用于观察修改前后的实际差异；测试记录用于验证实现。使用完整的相关测试命令，有助于把预期行为转化为可审查的证据。</p>
 <h2>七 取消与恢复</h2>
 <p>运行中的任务可以发起取消。服务先标记取消请求，Worker 或执行线程在安全点处理；最终业务状态为 <code>cancelled</code>。队列消费记录进入不可重试终态，不再次领取该任务。</p>
@@ -260,7 +260,7 @@ docker compose ps
 </table>
 <p>数据来自 SWE-bench Verified 真实 Issue，使用固定基准、环境校准与独立测试；这里的文件级统计与公开榜单的官方 resolved 指标采用不同口径。全部最终运行记录均保留。</p>
 <p>最后的 RAG 参数验证中，16 条本项目验证查询的 Recall@5 为 84.38%，MRR 为 0.6615。服务负载验证记录 3,312 次有效测量请求；这些结果描述各自的任务与环境，不转换为生产 SLA 或自动修复承诺。</p>
-<p><img src="assets/evaluation-dashboard.png" alt="DevPilot 最终评测页面" /></p>
+<p>当前前端已移除独立评测页面。完整结果见 <a href="../research/results/latest/README.md">最终结果包</a>，后端保留 <code>/api/evals/summary</code>、<code>/api/evals/difficulty</code> 与 <code>/api/evals/ablation</code> 只读接口。项目架构与指标口径见 <a href="technical-knowledge-base.md">技术知识库（飞书同步版）</a>。</p>
 <h2>十三 文档与源码导航</h2>
 <table>
 <thead>
