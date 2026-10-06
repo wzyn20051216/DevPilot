@@ -89,52 +89,55 @@ onBeforeUnmount(() => streamController?.abort())
 <template>
   <main class="task-detail-view">
     <div class="workspace-heading">
-      <div><RouterLink class="back-link" to="/"><ArrowLeft :size="15" /> Workspace</RouterLink><h1>Task Trace</h1></div>
+      <div>
+        <RouterLink class="back-link" to="/"><ArrowLeft :size="15" /> 返回工作台 · Workspace</RouterLink>
+        <h1>任务详情 · Task Trace</h1>
+      </div>
       <div v-if="detail" class="task-status" :data-status="detail.task.status">
         <span></span>{{ detail.task.status.replaceAll('_', ' ') }}
-        <button v-if="detail.task.status === 'running'" class="danger-button" type="button" @click="handleCancel"><Square :size="12" fill="currentColor" /> Cancel</button>
-        <button v-if="detail.task.status === 'interrupted'" class="primary-button" type="button" @click="observeRunningTask(true)"><Play :size="13" fill="currentColor" /> Resume</button>
+        <button v-if="detail.task.status === 'running'" class="danger-button" type="button" @click="handleCancel"><Square :size="12" fill="currentColor" /> 停止</button>
+        <button v-if="detail.task.status === 'interrupted'" class="primary-button" type="button" @click="observeRunningTask(true)"><Play :size="13" fill="currentColor" /> 恢复执行</button>
       </div>
     </div>
-    <div v-if="loading" class="loading-row"><LoaderCircle :size="18" class="spin" /> Loading task</div>
+    <div v-if="loading" class="loading-row"><LoaderCircle :size="18" class="spin" /> 加载任务中…</div>
     <div v-else-if="error" class="error-banner" role="alert">{{ error }}</div>
     <template v-else-if="detail">
       <section class="task-summary-band">
-        <div><FolderGit2 :size="17" /><span>Repository</span><code>{{ detail.task.repo_path }}</code></div>
-        <div><Clock3 :size="17" /><span>Task ID</span><code>{{ detail.task.id }}</code></div>
-        <div><GitBranch :size="17" /><span>Source</span><code>{{ sourceLabel }}</code></div>
+        <div><FolderGit2 :size="17" /><span>仓库 · Repository</span><code>{{ detail.task.repo_path }}</code></div>
+        <div><Clock3 :size="17" /><span>任务 ID · Task ID</span><code>{{ detail.task.id }}</code></div>
+        <div><GitBranch :size="17" /><span>来源 · Source</span><code>{{ sourceLabel }}</code></div>
       </section>
-      <section class="detail-question"><p class="eyebrow">DEVELOPMENT REQUEST</p><h2>{{ detail.task.question }}</h2></section>
+      <section class="detail-question"><p class="eyebrow">需求描述 · Development Request</p><h2>{{ detail.task.question }}</h2></section>
       <section v-if="metrics" class="task-summary-band">
-        <div><Activity :size="17" /><span>Tokens</span><code>{{ metrics.total_tokens ?? 0 }}</code></div>
-        <div><Clock3 :size="17" /><span>LLM time</span><code>{{ metrics.llm_seconds ?? 0 }}s</code></div>
-        <div><Wrench :size="17" /><span>Tool time</span><code>{{ metrics.tool_seconds ?? 0 }}s</code></div>
+        <div><Activity :size="17" /><span>Token 用量</span><code>{{ metrics.total_tokens ?? 0 }}</code></div>
+        <div><Clock3 :size="17" /><span>模型耗时 · LLM</span><code>{{ metrics.llm_seconds ?? 0 }}s</code></div>
+        <div><Wrench :size="17" /><span>工具耗时 · Tools</span><code>{{ metrics.tool_seconds ?? 0 }}s</code></div>
       </section>
       <section class="detail-plan">
-        <header class="column-header"><ListChecks :size="17" /><h2>Approved plan</h2><span class="column-count">{{ detail.task.plan.length }}</span></header>
+        <header class="column-header"><ListChecks :size="17" /><h2>已批准计划 · Approved plan</h2><span class="column-count">{{ detail.task.plan.length }}</span></header>
         <div class="detail-plan-grid">
           <article v-for="step in detail.task.plan" :key="step.id"><span>{{ String(step.id).padStart(2, '0') }}</span><div><strong>{{ step.title }}</strong><p>{{ step.description }}</p></div></article>
         </div>
       </section>
       <div class="detail-grid">
         <section class="detail-section">
-          <header class="column-header"><Terminal :size="17" /><h2>Persisted events</h2></header>
+          <header class="column-header"><Terminal :size="17" /><h2>持久化事件 · Events</h2></header>
           <div class="detail-list">
             <article v-for="event in detail.events" :key="event.sequence" class="trace-event">
               <div class="trace-meta"><span class="agent-name">{{ event.agent }}</span><span>{{ event.type }}</span><span>#{{ event.sequence }}</span></div>
               <p>{{ event.message || 'Event received' }}</p>
             </article>
-            <div v-if="!detail.events.length" class="empty-state">No persisted events</div>
+            <div v-if="!detail.events.length" class="empty-state">暂无持久化事件</div>
           </div>
         </section>
         <section class="detail-section">
-          <header class="column-header"><Wrench :size="17" /><h2>Tool calls</h2></header>
+          <header class="column-header"><Wrench :size="17" /><h2>工具调用 · Tool calls</h2></header>
           <div class="detail-list">
             <article v-for="(call, index) in detail.tool_calls" :key="index" class="tool-call-row">
               <div><Braces :size="15" /><strong>{{ call.tool }}</strong><span>{{ call.agent }}</span></div>
               <pre>{{ JSON.stringify(call.arguments, null, 2) }}</pre><p>{{ call.result_preview }}</p><small>{{ call.duration_seconds.toFixed(3) }}s · {{ call.succeeded ? 'ok' : 'failed' }}</small>
             </article>
-            <div v-if="!detail.tool_calls.length" class="empty-state">No tool calls recorded</div>
+            <div v-if="!detail.tool_calls.length" class="empty-state">暂无工具调用记录</div>
           </div>
         </section>
       </div>

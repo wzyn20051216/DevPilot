@@ -24,5 +24,5 @@ const lines = computed(() => props.diff.split('\n').map((content, index) => ({
       <span>{{ line.index + 1 }}</span><code>{{ line.content || ' ' }}</code>
     </div>
   </div>
-  <div v-else class="empty-state compact-empty">No uncommitted changes</div>
+  <div v-else class="empty-state compact-empty">当前没有未提交改动</div>
 </template>

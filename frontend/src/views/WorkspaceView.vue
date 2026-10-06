@@ -6,12 +6,13 @@ import {
   FolderGit2,
   GitBranch,
   Import,
+  Info,
   ListChecks,
   LoaderCircle,
   Play,
   RotateCcw,
-  Square,
   Sparkles,
+  Square,
   Terminal,
 } from '@lucide/vue'
 import { computed, nextTick, ref } from 'vue'
@@ -27,13 +28,9 @@ import type { TaskPlanResponse } from '../types/agent'
 
 const store = useTaskStore()
 const inputMode = ref<'local' | 'github'>('local')
-const repoPath = ref(
-  import.meta.env.VITE_DEFAULT_REPO_PATH ?? '',
-)
+const repoPath = ref(import.meta.env.VITE_DEFAULT_REPO_PATH ?? '')
 const question = ref('')
-const executionMode = ref<'single_no_rag' | 'single_rag' | 'multi_no_rag' | 'multi_rag'>(
-  'multi_rag',
-)
+const executionMode = ref<'multi_no_rag' | 'multi_rag'>('multi_rag')
 const githubOwner = ref('')
 const githubRepo = ref('')
 const issueNumber = ref(1)
@@ -41,11 +38,26 @@ const issueUrl = ref('')
 const planning = ref(false)
 const approvalOpen = ref(false)
 const traceElement = ref<HTMLElement | null>(null)
+
+/** @brief 一个既能点也能读的路径示例，帮新用户快速上手。 */
+const repoExample = '/workspace/example-project'
+const taskExamples = [
+  '为订单接口补充分页参数校验，并补上边界用例的单元测试',
+  '修复登录在并发请求下偶发 401 的问题，说明根因与修复',
+]
 const canPlan = computed(() => {
   if (planning.value || !repoPath.value.trim()) return false
   if (inputMode.value === 'local') return Boolean(question.value.trim())
   return Boolean(githubOwner.value.trim() && githubRepo.value.trim() && issueNumber.value > 0)
 })
+
+/** @brief 点击示例芯片，把示例值填进对应输入框。 */
+function applyRepoExample() {
+  repoPath.value = repoExample
+}
+function applyTaskExample(text: string) {
+  question.value = text
+}
 
 /** @brief 调用 Planner 创建待人工审批的任务计划。 */
 async function handlePlan() {
@@ -65,12 +77,12 @@ async function handlePlan() {
       })
     } else {
       const imported = await importGitHubIssue({
-          owner: githubOwner.value.trim(),
-          repo: githubRepo.value.trim(),
-          issue_number: issueNumber.value,
-          local_repo_path: repoPath.value.trim(),
-          execution_mode: executionMode.value,
-        })
+        owner: githubOwner.value.trim(),
+        repo: githubRepo.value.trim(),
+        issue_number: issueNumber.value,
+        local_repo_path: repoPath.value.trim(),
+        execution_mode: executionMode.value,
+      })
 
       issueUrl.value = imported.issue_url
       store.source = {
@@ -164,8 +176,11 @@ function eventLabel(type: string) {
   <main class="workspace-view">
     <div class="workspace-heading">
       <div>
-        <p class="eyebrow">AGENT CONTROL PLANE</p>
-        <h1>Development Workspace</h1>
+        <p class="eyebrow">Development Workspace · 研发工作台</p>
+        <h1>让 Agent 替你改代码</h1>
+        <p class="heading-sub">
+          填写仓库路径与需求，先生成计划，人工确认后再执行；全过程实时可追踪。
+        </p>
       </div>
       <div class="task-status" :data-status="store.status">
         <span></span>{{ store.status.replaceAll('_', ' ') }}
@@ -179,51 +194,80 @@ function eventLabel(type: string) {
         <header class="column-header">
           <FolderGit2 :size="17" />
           <h2 id="task-title">Task Input</h2>
+          <span class="column-step">1</span>
         </header>
 
         <div class="input-mode-switch" role="tablist" aria-label="任务来源">
           <button type="button" :aria-selected="inputMode === 'local'" @click="inputMode = 'local'">
-            <Terminal :size="14" />Local task
+            <Terminal :size="14" />本地需求
           </button>
           <button type="button" :aria-selected="inputMode === 'github'" @click="inputMode = 'github'">
-            <GitBranch :size="14" />GitHub issue
+            <GitBranch :size="14" />GitHub Issue
           </button>
         </div>
 
         <form class="task-form" @submit.prevent="handlePlan">
-          <label for="repo-path">Repository</label>
+          <label for="repo-path">仓库路径 · Repository path</label>
           <div class="input-shell">
             <Terminal :size="15" />
-            <input id="repo-path" v-model="repoPath" placeholder="例如 /workspace/my-repository" autocomplete="off" spellcheck="false" />
+            <input
+              id="repo-path"
+              v-model="repoPath"
+              placeholder="例如 /workspace/example-project"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+          <div class="example-row">
+            <span class="example-chip" @click="applyRepoExample">
+              试用示例：{{ repoExample }}
+            </span>
           </div>
 
-          <label for="execution-mode">Execution strategy</label>
-          <select id="execution-mode" v-model="executionMode">
-            <option value="single_no_rag">Single Agent · no RAG (experiment)</option>
-            <option value="single_rag">Single Agent · Hybrid RAG (experiment)</option>
-            <option value="multi_no_rag">Multi Agent · no RAG</option>
-            <option value="multi_rag">Multi Agent · Hybrid RAG (default)</option>
-          </select>
-
           <template v-if="inputMode === 'local'">
-            <label for="question">Development Task</label>
-            <textarea id="question" v-model="question" rows="9" placeholder="描述目标行为、当前现象与验收条件" />
+            <label for="question">需求描述 · What should we build or fix?</label>
+            <textarea
+              id="question"
+              v-model="question"
+              rows="7"
+              placeholder="描述目标行为、当前现象与验收条件。越具体，计划越准确。"
+            />
+            <div class="example-row">
+              <span
+                v-for="(example, index) in taskExamples"
+                :key="index"
+                class="example-chip"
+                @click="applyTaskExample(example)"
+              >
+                {{ example }}
+              </span>
+            </div>
           </template>
 
           <template v-else>
             <div class="github-fields">
-              <div><label for="github-owner">Owner</label><input id="github-owner" v-model="githubOwner" autocomplete="off" /></div>
-              <div><label for="github-repo">Repository</label><input id="github-repo" v-model="githubRepo" autocomplete="off" /></div>
+              <div><label for="github-owner">Owner</label><input id="github-owner" v-model="githubOwner" autocomplete="off" placeholder="例如 octocat" /></div>
+              <div><label for="github-repo">Repository</label><input id="github-repo" v-model="githubRepo" autocomplete="off" placeholder="例如 hello-world" /></div>
             </div>
             <label for="issue-number">Issue number</label>
-            <input id="issue-number" v-model.number="issueNumber" min="1" type="number" />
+            <input id="issue-number" v-model.number="issueNumber" min="1" type="number" placeholder="例如 42" />
           </template>
+
+          <label for="execution-mode">执行策略 · Execution strategy</label>
+          <select id="execution-mode" v-model="executionMode">
+            <option value="multi_rag">多 Agent · 混合检索（推荐）</option>
+            <option value="multi_no_rag">多 Agent · 不使用检索</option>
+          </select>
+          <p class="field-hint">
+            <Info :size="13" />
+            <span>默认使用多 Agent 协作并提供混合检索工具，也可选择不使用检索。</span>
+          </p>
 
           <button class="primary-button" type="submit" :disabled="!canPlan">
             <LoaderCircle v-if="planning" :size="16" class="spin" />
             <Import v-else-if="inputMode === 'github'" :size="16" />
             <Sparkles v-else :size="16" />
-            {{ planning ? 'Planning' : inputMode === 'github' ? 'Import Issue' : 'Generate Plan' }}
+            {{ planning ? '生成中…' : inputMode === 'github' ? '导入 Issue 并生成计划' : '生成执行计划' }}
           </button>
         </form>
 
@@ -243,6 +287,7 @@ function eventLabel(type: string) {
         <header class="column-header">
           <ListChecks :size="17" />
           <h2 id="plan-title">Development Plan</h2>
+          <span class="column-step">2</span>
           <span class="column-count">{{ store.plan.length }}</span>
         </header>
 
@@ -257,26 +302,26 @@ function eventLabel(type: string) {
         </div>
         <div v-else class="empty-state">
           <Clock3 :size="22" />
-          <span>No plan generated</span>
+          <span>生成计划后，这里会显示待确认的步骤</span>
         </div>
 
         <div v-if="store.status === 'awaiting_approval'" class="approval-bar">
           <div>
             <CheckCircle2 :size="17" />
-            <span>Ready for approval</span>
+            <span>计划已就绪，等待你确认</span>
           </div>
           <button class="execute-button" type="button" @click="approvalOpen = true">
             <Play :size="15" fill="currentColor" />
-            Review & Execute
+            查看并执行
           </button>
         </div>
-
       </section>
 
       <section class="workspace-column trace-column" aria-labelledby="trace-title">
         <header class="column-header">
           <Terminal :size="17" />
           <h2 id="trace-title">Agent Trace</h2>
+          <span class="column-step">3</span>
           <span class="live-indicator" :class="{ active: store.running }"></span>
           <button
             v-if="store.status === 'running'"
@@ -284,7 +329,7 @@ function eventLabel(type: string) {
             type="button"
             @click="handleCancel"
           >
-            <Square :size="13" fill="currentColor" /> Cancel
+            <Square :size="13" fill="currentColor" /> 停止
           </button>
         </header>
 
@@ -299,7 +344,7 @@ function eventLabel(type: string) {
           </article>
           <div v-if="!store.events.length" class="empty-state trace-empty">
             <RotateCcw :size="21" />
-            <span>Trace waiting</span>
+            <span>执行后，Agent 的每一步都会实时出现在这里</span>
           </div>
         </div>
 
@@ -326,3 +371,24 @@ function eventLabel(type: string) {
     />
   </main>
 </template>
+
+<style scoped>
+.heading-sub {
+  margin: 12px 0 0;
+  max-width: 620px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+.column-step {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-sunken);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+</style>
