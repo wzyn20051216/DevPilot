@@ -80,7 +80,7 @@ $env:PYTHONUTF8 = '1'
 & '.\.venv\Scripts\python.exe' -m pytest
 ```
 
-上述环境设置只用于隔离测试进程，不修改部署凭据。真实 smoke 轨迹位于 `research/artifacts/multi_protocol_smoke_20261005`，不会写入业务历史。
+上述环境设置只用于隔离测试进程，不修改部署凭据。早期 smoke 的轨迹与临时脚本已移出项目做本机归档；当前协议验收使用 `tests/backend/unit/test_multi_agent_protocol.py` 等回归，业务历史与冻结评测保持独立。
 
 ## 历史清空
 

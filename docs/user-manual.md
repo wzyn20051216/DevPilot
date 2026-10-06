@@ -234,7 +234,7 @@ docker compose ps
 
 最后的 RAG 参数验证中，16 条本项目验证查询的 Recall@5 为 84.38%，MRR 为 0.6615。服务负载验证记录 3,312 次有效测量请求；这些结果描述各自的任务与环境，不转换为生产 SLA 或自动修复承诺。
 
-当前前端已移除独立评测页面。完整结果见 [最终结果包](../research/results/latest/README.md)，后端保留 `/api/evals/summary`、`/api/evals/difficulty` 与 `/api/evals/ablation` 只读接口。项目架构与指标口径见 [技术知识库（飞书同步版）](technical-knowledge-base.md)。
+当前前端已移除独立评测页面。完整结果见 [最终结果包](../research/results/latest/README.md)，后端保留 `/api/evals/summary`、`/api/evals/difficulty` 与 `/api/evals/ablation` 只读接口。项目架构与指标口径见 [分章学习文档（飞书同步版）](learning/README.md)。
 
 ## 十三 文档与源码导航
 
